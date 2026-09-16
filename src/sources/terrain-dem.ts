@@ -3,15 +3,14 @@
 import type { EngineKind } from '../core/types';
 import type { ITileSource } from '../core/source';
 
-/** MapLibre 公开 Terrain RGB DEM 源 — 用于 3D 地形渲染 */
+/** Mapzen Terrarium DEM 源 — 用于 MapLibre Terrain3D 地形渲染 */
 export const terrainDem: ITileSource = {
   id: 'terrain-dem',
-  name: 'Terrain RGB DEM',
+  name: 'Terrarium DEM',
   type: 'terrain',
   category: 'topo',
-  tileUrl:
-    'https://api.maptiler.com/tiles/terrain-rgb/tiles.json',
-  attribution: 'MapTiler',
+  tileUrl: 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png',
+  attribution: 'Mapzen Terrarium / AWS Open Data',
   minZoom: 0,
   maxZoom: 15,
   // 注意：此源仅在 MapLibre 中使用 Terrain3D 配置时生效，不走 toEngineConfig

@@ -13,6 +13,7 @@ import {
   Gauge,
   Globe2,
   History,
+  LandPlot,
   Layers3,
   LocateFixed,
   MapPinned,
@@ -55,6 +56,7 @@ const TOOL_ICONS: Record<string, LucideIcon> = {
   'place-summary': MapPinned,
   'nl-search': MessageSquare,
   'image-analysis': Satellite,
+  'admin-boundary': LandPlot,
 };
 
 export const CATEGORY_ICONS: Record<ToolCategory, LucideIcon> = {

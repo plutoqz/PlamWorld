@@ -5,21 +5,24 @@ import type * as maplibregl from 'maplibre-gl';
 
 export const TERRAIN_SOURCE_ID = 'terrain-dem';
 
-/** MapLibre 官方 JAXA AW3D30 地形 (TileJSON, 免费，maxzoom=12) */
-const TERRAIN_TILEJSON = 'https://demotiles.maplibre.org/terrain-tiles/tiles.json';
+/** Mapzen Terrarium RGB DEM 瓦片 (AWS Open Data, 全球覆盖，免费，maxzoom=15) */
+export const TERRARIUM_TILES = [
+  'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png',
+];
 
 /**
  * 添加 DEM 地形源。
- * 策略：优先用 TileJSON（自动处理编码/范围），失败后回退到 AWS 瓦片。
+ * 使用 Mapzen Terrarium RGB 瓦片，MapLibre 原生支持 encoding: 'terrarium' 全球无缝覆盖。
  */
 export function addTerrainSource(map: maplibregl.Map): void {
   if (map.getSource(TERRAIN_SOURCE_ID)) return;
 
-  // 使用 TileJSON — MapLibre v6 推荐方式
   map.addSource(TERRAIN_SOURCE_ID, {
     type: 'raster-dem',
-    url: TERRAIN_TILEJSON,
+    encoding: 'terrarium',
+    tiles: TERRARIUM_TILES,
     tileSize: 256,
+    maxzoom: 15,
   });
 }
 

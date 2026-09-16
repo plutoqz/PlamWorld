@@ -106,6 +106,10 @@ export interface IMapEngine {
   /** 截取视口画面 (Canvas → Blob)，为 AI 分析预留 */
   captureViewport(options?: CaptureOptions): Promise<Blob>;
 
+  /** 投影模式控制 (墨卡托平面 / 3D 地球仪) */
+  setProjection?(projection: 'mercator' | 'globe'): void;
+  getProjection?(): 'mercator' | 'globe';
+
   /** 泄漏底层引擎实例，高级工具按需使用 */
   getNative(): unknown;
 }

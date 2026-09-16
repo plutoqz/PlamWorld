@@ -1,6 +1,8 @@
 import { Component } from 'react';
-import { Earth, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import { Earth, Globe, Mountain, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import { useUIStore } from '@stores/uiStore';
+import { useMapStore } from '@stores/mapStore';
+import { getEngine } from '@hooks/useMap';
 import { MapView } from './components/map/MapView';
 import { SourceSwitcher } from './components/controls/SourceSwitcher';
 import { SearchBar } from './components/controls/SearchBar';
@@ -33,6 +35,22 @@ export default function App() {
   const sidebarOpen = useUIStore((state) => state.sidebarOpen);
   const toggleSidebar = useUIStore((state) => state.toggleSidebar);
   const setSidebarOpen = useUIStore((state) => state.setSidebarOpen);
+  const terrain3d = useMapStore((state) => state.terrain3d);
+  const toggleTerrain3d = useMapStore((state) => state.toggleTerrain3d);
+  const globe = useMapStore((state) => state.globe);
+  const toggleGlobe = useMapStore((state) => state.toggleGlobe);
+
+  const handleToggleGlobe = () => {
+    const nextGlobe = !globe;
+    toggleGlobe();
+    if (nextGlobe) {
+      const engine = getEngine();
+      if (engine && engine.getZoom() > 6) {
+        // 放大太深时开启地球仪，平滑拉升到太空全景视角
+        engine.flyTo([105, 35], 2, { duration: 1000 });
+      }
+    }
+  };
 
   return (
     <ErrorBoundary>
@@ -60,6 +78,26 @@ export default function App() {
           <SearchBar />
 
           <div className="pw-topbar-actions">
+            <button
+              type="button"
+              className={`pw-topbar-button ${globe ? 'is-active' : ''}`}
+              onClick={handleToggleGlobe}
+              aria-label={globe ? '切换为平面投影' : '切换为 3D 地球仪'}
+              title={globe ? '切换为平面投影' : '切换为 3D 地球仪'}
+            >
+              <Globe size={17} />
+              <span>{globe ? '地球仪' : '平面'}</span>
+            </button>
+            <button
+              type="button"
+              className={`pw-topbar-button ${terrain3d ? 'is-active' : ''}`}
+              onClick={toggleTerrain3d}
+              aria-label={terrain3d ? '关闭 3D 地形' : '开启 3D 地形'}
+              title={terrain3d ? '关闭 3D 地形' : '开启 3D 地形'}
+            >
+              <Mountain size={17} />
+              <span>{terrain3d ? '3D 地形' : '2D 平面'}</span>
+            </button>
             <SourceSwitcher />
           </div>
         </header>

@@ -29,6 +29,8 @@ import {
   dynastyOverlayTool,
   ecologyTool,
   literaryMapTool,
+  buildings3DTool,
+  adminBoundaryTool,
 } from '@tools/registry';
 import { ToolIcon } from '@components/ui/ToolIcon';
 import { ElevationProfilePanel } from './sub/ProfilePanel';
@@ -48,6 +50,7 @@ import { SunlightControl } from '@components/visual/SunlightControl';
 import { PeakLabels } from '@components/visual/PeakLabels';
 import { StoryPlayer } from '@components/visual/StoryPlayer';
 import { GeoGuessrPanel } from '@components/panels/GeoGuessrPanel';
+import { Buildings3DPanel } from '@components/panels/Buildings3DPanel';
 import { HydrologyPanel } from '@components/panels/HydrologyPanel';
 import { PlaceSummaryPanel } from '@components/panels/PlaceSummaryPanel';
 import { NLSearchPanel } from '@components/panels/NLSearchPanel';
@@ -58,6 +61,7 @@ import { GeologyPanel } from '@components/panels/GeologyPanel';
 import { DynastyPanel } from '@components/panels/DynastyPanel';
 import { EcologyPanel } from '@components/panels/EcologyPanel';
 import { LiteraryPanel } from '@components/panels/LiteraryPanel';
+import { AdminBoundaryPanel } from './AdminBoundaryPanel';
 
 interface PanelProps {
   sidebarOpen: boolean;
@@ -81,6 +85,7 @@ const PANEL_MAP: Record<string, React.FC<PanelProps>> = {
   'peak-finder': () => <PeakLabels tool={peakFinderTool} />,
   'story-map': () => <StoryPlayer tool={storyMapTool} />,
   geoguessr: () => <GeoGuessrPanel tool={geoGuessrTool} />,
+  '3d-buildings': () => <Buildings3DPanel tool={buildings3DTool} />,
   hydrology: () => <HydrologyPanel tool={hydrologyTool} />,
   'place-summary': () => <PlaceSummaryPanel tool={placeSummaryTool} />,
   'nl-search': () => <NLSearchPanel tool={nlSearchTool} />,
@@ -91,6 +96,7 @@ const PANEL_MAP: Record<string, React.FC<PanelProps>> = {
   'dynasty-overlay': () => <DynastyPanel tool={dynastyOverlayTool} />,
   'ecology': () => <EcologyPanel tool={ecologyTool} />,
   'literary-map': () => <LiteraryPanel tool={literaryMapTool} />,
+  'admin-boundary': () => <AdminBoundaryPanel tool={adminBoundaryTool} />,
 };
 
 const FULLSCREEN_TOOLS = new Set(['compare', 'projection-switch']);

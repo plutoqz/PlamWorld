@@ -1,11 +1,19 @@
-// components/panels/EcologyPanel.tsx — 生态 & 生物多样性面板 (v0.6)
-
 import { useState, useEffect, useRef, useCallback } from 'react';
 import * as maplibregl from 'maplibre-gl';
-import { RotateCcw, Play, Pause, ChevronRight } from 'lucide-react';
+import {
+  RotateCcw,
+  Play,
+  Pause,
+  ChevronRight,
+  Search,
+  LoaderCircle,
+  Image as ImageIcon,
+  MapPin,
+  ExternalLink,
+} from 'lucide-react';
 import type { EcologyTool, EcologyView } from '../../tools/ecology.tool';
 import { VIEW_LABELS } from '../../tools/ecology.tool';
-import type { SpeciesDef, IUCNStatus, SpeciesCategory } from '../../core/ecology';
+import type { SpeciesDef, IUCNStatus, SpeciesCategory, GBIFOccurrence } from '../../core/ecology';
 import { IUCN_COLORS, IUCN_LABELS, CATEGORY_LABELS } from '../../core/ecology';
 
 // ---- constants ----
@@ -31,9 +39,18 @@ export function EcologyPanel({ tool }: EcologyPanelProps) {
   const [isPlaying, setIsPlaying] = useState(tool.state.isPlaying);
   const [animSpeed, setAnimSpeed] = useState(tool.state.animationSpeed);
 
+  // GBIF 观测状态
+  const [occurrences, setOccurrences] = useState<GBIFOccurrence[]>(tool.state.occurrences);
+  const [isSearching, setIsSearching] = useState(tool.state.isSearchingOccurrences);
+  const [occurrenceError, setOccurrenceError] = useState<string | null>(tool.state.occurrenceError);
+  const [selectedOcc, setSelectedOcc] = useState<GBIFOccurrence | null>(
+    tool.state.selectedOccurrence,
+  );
+
   const mapRef = useRef<maplibregl.Map | null>(null);
   const animRef = useRef<number | null>(null);
   const animProgressRef = useRef(0);
+  const markersRef = useRef<maplibregl.Marker[]>([]);
 
   // sync
   useEffect(() => {
@@ -44,6 +61,10 @@ export function EcologyPanel({ tool }: EcologyPanelProps) {
       setHighlightId(tool.state.highlightSpeciesId);
       setIsPlaying(tool.state.isPlaying);
       setAnimSpeed(tool.state.animationSpeed);
+      setOccurrences([...tool.state.occurrences]);
+      setIsSearching(tool.state.isSearchingOccurrences);
+      setOccurrenceError(tool.state.occurrenceError);
+      setSelectedOcc(tool.state.selectedOccurrence);
     };
     tool.setOnStateChange(onStateChange);
     return () => tool.setOnStateChange(null);
@@ -56,6 +77,8 @@ export function EcologyPanel({ tool }: EcologyPanelProps) {
     const map = engine.getNative() as maplibregl.Map;
     mapRef.current = map;
     return () => {
+      markersRef.current.forEach((m) => m.remove());
+      markersRef.current = [];
       cleanupAll(map);
       stopAnimation();
     };
@@ -134,6 +157,77 @@ export function EcologyPanel({ tool }: EcologyPanelProps) {
       animRef.current = null;
     }
   }
+
+  // GBIF 观测图钉标记渲染
+  useEffect(() => {
+    markersRef.current.forEach((m) => m.remove());
+    markersRef.current = [];
+    const map = mapRef.current;
+    if (!map || view !== 'explore') return;
+
+    occurrences.forEach((occ) => {
+      const el = document.createElement('button');
+      el.type = 'button';
+      el.title = `${occ.vernacularName || occ.scientificName} (${occ.iucnStatus})`;
+      const isSel = selectedOcc?.key === occ.key;
+      el.style.cssText = [
+        'width: 26px',
+        'height: 26px',
+        'border-radius: 50%',
+        `border: 2px solid ${IUCN_COLORS[occ.iucnStatus] || '#2ecc71'}`,
+        `box-shadow: 0 2px 8px rgba(0,0,0,0.6)${isSel ? `, 0 0 0 3px ${IUCN_COLORS[occ.iucnStatus] || '#2ecc71'}` : ''}`,
+        'overflow: hidden',
+        'background: #11161a',
+        'cursor: pointer',
+        'display: flex',
+        'align-items: center',
+        'justify-content: center',
+        'padding: 0',
+      ].join(';');
+
+      if (occ.mediaUrl) {
+        const img = document.createElement('img');
+        img.src = occ.mediaUrl;
+        img.style.cssText = 'width: 100%; height: 100%; object-fit: cover;';
+        el.appendChild(img);
+      } else {
+        const span = document.createElement('span');
+        span.style.fontSize = '12px';
+        const icons: Record<string, string> = {
+          bird: '🦅',
+          mammal: '🦊',
+          plant: '🌿',
+          reptile: '🦎',
+          amphibian: '🐸',
+          fish: '🐟',
+        };
+        span.textContent = icons[occ.category] || '🐾';
+        el.appendChild(span);
+      }
+
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        tool.setSelectedOccurrence(occ);
+      });
+
+      const marker = new maplibregl.Marker({ element: el })
+        .setLngLat([occ.lng, occ.lat])
+        .addTo(map);
+      markersRef.current.push(marker);
+    });
+
+    return () => {
+      markersRef.current.forEach((m) => m.remove());
+      markersRef.current = [];
+    };
+  }, [view, occurrences, selectedOcc, tool]);
+
+  const handleSearchBounds = useCallback(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const b = map.getBounds();
+    tool.searchOccurrences([b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]);
+  }, [tool]);
 
   function toggleIUCN(status: IUCNStatus) {
     if (iucnFilter.includes(status)) {
@@ -317,6 +411,315 @@ export function EcologyPanel({ tool }: EcologyPanelProps) {
                 </div>
               );
             })()}
+        </>
+      )}
+
+      {/* GBIF 实地探索视图 */}
+      {view === 'explore' && (
+        <>
+          {/* 触发搜索按钮 */}
+          <button
+            type="button"
+            className="pw-primary-button"
+            disabled={isSearching}
+            onClick={handleSearchBounds}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 6,
+              padding: '8px 12px',
+              fontSize: 12,
+              width: '100%',
+            }}
+          >
+            {isSearching ? (
+              <>
+                <LoaderCircle size={14} className="pw-spin" />
+                <span>正在查询 GBIF 全球物种库...</span>
+              </>
+            ) : (
+              <>
+                <Search size={14} />
+                <span>搜索当前视口物种 (GBIF 数据库)</span>
+              </>
+            )}
+          </button>
+
+          {/* 分类筛选 */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <label style={{ fontSize: 10, color: 'var(--pw-text-muted)' }}>分类筛选</label>
+            <select
+              value={categoryFilter}
+              onChange={(e) => tool.setCategoryFilter(e.target.value as SpeciesCategory | 'all')}
+              style={{
+                padding: '4px 8px',
+                border: '1px solid var(--pw-border)',
+                borderRadius: 4,
+                background: '#11161a',
+                color: 'var(--pw-text)',
+                fontSize: 12,
+              }}
+            >
+              <option value="all">全部生物</option>
+              {(Object.entries(CATEGORY_LABELS) as [SpeciesCategory, string][]).map(
+                ([c, label]) => (
+                  <option key={c} value={c}>
+                    {label}
+                  </option>
+                ),
+              )}
+            </select>
+          </div>
+
+          {/* IUCN 保护等级筛选 */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <label style={{ fontSize: 10, color: 'var(--pw-text-muted)' }}>保护状态筛选</label>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+              {(['CR', 'EN', 'VU', 'NT', 'LC'] as IUCNStatus[]).map((status) => (
+                <button
+                  key={status}
+                  type="button"
+                  onClick={() => toggleIUCN(status)}
+                  style={{
+                    padding: '2px 8px',
+                    borderRadius: 3,
+                    fontSize: 10,
+                    border: `1px solid ${IUCN_COLORS[status]}`,
+                    background: iucnFilter.includes(status)
+                      ? `${IUCN_COLORS[status]}33`
+                      : 'transparent',
+                    color: iucnFilter.includes(status)
+                      ? IUCN_COLORS[status]
+                      : 'var(--pw-text-muted)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {status}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* 错误提示 */}
+          {occurrenceError && (
+            <div style={{ fontSize: 11, color: '#f87171', padding: '4px 0' }}>
+              {occurrenceError}
+            </div>
+          )}
+
+          {/* 观测记录统计 */}
+          {occurrences.length > 0 && (
+            <div
+              style={{
+                fontSize: 10,
+                color: 'var(--pw-text-muted)',
+                display: 'flex',
+                justifyContent: 'space-between',
+              }}
+            >
+              <span>实地记录 ({occurrences.length})</span>
+              <span>点击卡片或地图圆点查看</span>
+            </div>
+          )}
+
+          {/* 观测记录列表 */}
+          {occurrences.length > 0 && (
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 6,
+                maxHeight: 220,
+                overflowY: 'auto',
+              }}
+            >
+              {occurrences.map((occ) => {
+                const isSel = selectedOcc?.key === occ.key;
+                return (
+                  <button
+                    key={occ.key}
+                    type="button"
+                    onClick={() => {
+                      tool.setSelectedOccurrence(isSel ? null : occ);
+                      if (!isSel && mapRef.current) {
+                        mapRef.current.flyTo({
+                          center: [occ.lng, occ.lat],
+                          zoom: Math.max(9, mapRef.current.getZoom()),
+                          duration: 800,
+                        });
+                      }
+                    }}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      padding: 6,
+                      borderRadius: 6,
+                      fontSize: 11,
+                      border: isSel
+                        ? `1px solid ${IUCN_COLORS[occ.iucnStatus] || '#3b82f6'}`
+                        : '1px solid var(--pw-border)',
+                      background: isSel ? 'rgba(59, 130, 246, 0.12)' : '#0d1217',
+                      color: 'var(--pw-text)',
+                      cursor: 'pointer',
+                      textAlign: 'left',
+                    }}
+                  >
+                    {occ.mediaUrl ? (
+                      <img
+                        src={occ.mediaUrl}
+                        alt=""
+                        style={{
+                          width: 32,
+                          height: 32,
+                          borderRadius: 4,
+                          objectFit: 'cover',
+                          flexShrink: 0,
+                        }}
+                      />
+                    ) : (
+                      <div
+                        style={{
+                          width: 32,
+                          height: 32,
+                          borderRadius: 4,
+                          background: 'rgba(255,255,255,0.05)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          flexShrink: 0,
+                        }}
+                      >
+                        <ImageIcon size={14} style={{ color: 'var(--pw-text-faint)' }} />
+                      </div>
+                    )}
+                    <div style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
+                      <div
+                        style={{
+                          fontWeight: 600,
+                          whiteSpace: 'nowrap',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                        }}
+                      >
+                        {occ.vernacularName || occ.species || occ.scientificName}
+                      </div>
+                      <div
+                        style={{
+                          fontSize: 9,
+                          color: 'var(--pw-text-muted)',
+                          fontStyle: 'italic',
+                          whiteSpace: 'nowrap',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                        }}
+                      >
+                        {occ.scientificName}
+                      </div>
+                    </div>
+                    <span
+                      style={{
+                        padding: '1px 5px',
+                        borderRadius: 3,
+                        fontSize: 9,
+                        fontWeight: 600,
+                        color: IUCN_COLORS[occ.iucnStatus],
+                        border: `1px solid ${IUCN_COLORS[occ.iucnStatus]}44`,
+                      }}
+                    >
+                      {occ.iucnStatus}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {/* 选中记录卡片 */}
+          {selectedOcc && (
+            <div
+              style={{
+                padding: 10,
+                borderRadius: 6,
+                background: '#0d1217',
+                border: `1px solid ${IUCN_COLORS[selectedOcc.iucnStatus] || 'var(--pw-border)'}`,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 6,
+                fontSize: 11,
+              }}
+            >
+              {selectedOcc.mediaUrl && (
+                <img
+                  src={selectedOcc.mediaUrl}
+                  alt={selectedOcc.scientificName}
+                  style={{
+                    width: '100%',
+                    maxHeight: 140,
+                    objectFit: 'cover',
+                    borderRadius: 4,
+                  }}
+                />
+              )}
+              <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--pw-text)' }}>
+                {selectedOcc.vernacularName || selectedOcc.species || selectedOcc.scientificName}
+              </div>
+              <div style={{ fontStyle: 'italic', color: 'var(--pw-text-muted)', fontSize: 11 }}>
+                {selectedOcc.scientificName}
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, fontSize: 10 }}>
+                <span style={{ color: IUCN_COLORS[selectedOcc.iucnStatus], fontWeight: 600 }}>
+                  IUCN: {IUCN_LABELS[selectedOcc.iucnStatus] || selectedOcc.iucnStatus}
+                </span>
+                {selectedOcc.family && (
+                  <span style={{ color: 'var(--pw-text-faint)' }}>科: {selectedOcc.family}</span>
+                )}
+                {selectedOcc.order && (
+                  <span style={{ color: 'var(--pw-text-faint)' }}>目: {selectedOcc.order}</span>
+                )}
+              </div>
+              {selectedOcc.eventDate && (
+                <div style={{ fontSize: 10, color: 'var(--pw-text-muted)' }}>
+                  观测时间: {selectedOcc.eventDate.split('T')[0]}
+                </div>
+              )}
+              {selectedOcc.recordedBy && (
+                <div style={{ fontSize: 10, color: 'var(--pw-text-faint)' }}>
+                  记录人: {selectedOcc.recordedBy}
+                </div>
+              )}
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  marginTop: 4,
+                }}
+              >
+                <span style={{ fontSize: 9, color: 'var(--pw-text-faint)', display: 'flex', alignItems: 'center', gap: 2 }}>
+                  <MapPin size={10} />
+                  {selectedOcc.lat.toFixed(4)}°, {selectedOcc.lng.toFixed(4)}°
+                </span>
+                <a
+                  href={`https://www.gbif.org/occurrence/${selectedOcc.key}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 3,
+                    fontSize: 10,
+                    color: '#60a5fa',
+                    textDecoration: 'none',
+                  }}
+                >
+                  <span>GBIF 详情</span>
+                  <ExternalLink size={10} />
+                </a>
+              </div>
+            </div>
+          )}
         </>
       )}
 

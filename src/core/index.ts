@@ -111,3 +111,16 @@ export type {
   GeoProfile,
   ProfileRenderData,
 } from './geology';
+
+// 行政区划 (v0.6+)
+export {
+  getChinaProvinces,
+  getWorldCountries,
+  searchAdminRegions,
+  getCombinedBoundariesGeoJson,
+} from './admin-boundary';
+export type {
+  AdminLevel,
+  AdminRegion,
+  BoundaryLayerFilter,
+} from './admin-boundary';

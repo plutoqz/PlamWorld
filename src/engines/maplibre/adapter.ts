@@ -25,6 +25,7 @@ export class MapLibreAdapter implements IMapEngine {
   private layerIdCounter = 0;
   private overlays = new Map<string, { data: FeatureCollection; style?: LayerStyle }>();
   private sourcePreview: GeoJsonCanvasOverlay | null = null;
+  private middleMouseDownCleanup: (() => void) | null = null;
 
   mount(options: MapEngineOptions): void {
     if (this.map) this.destroy();
@@ -37,6 +38,7 @@ export class MapLibreAdapter implements IMapEngine {
       zoom: options.zoom,
       pitch: options.pitch ?? 0,
       bearing: options.bearing ?? 0,
+      maxPitch: 85,
     };
 
     // MapLibre v6 does not fire `load` when style is omitted.
@@ -49,14 +51,62 @@ export class MapLibreAdapter implements IMapEngine {
       console.error('[MapLibreAdapter] map error:', event.error?.message ?? event.error);
     });
 
+    // 启用鼠标中键 (滚轮按键) 拖拽调节 3D 俯仰与旋转视角
+    this.setupMiddleMouseOrbit(options.container);
+
     // v6: 用 once 绑定 load，避免 StrictMode 双重 mount 重复绑定
     this.map.once('load', () => {
       log('✅ load event fired');
     });
   }
 
+  private setupMiddleMouseOrbit(container: HTMLElement): void {
+    const onMouseDown = (e: MouseEvent) => {
+      if (e.button !== 1 || !this.map) return;
+      e.preventDefault();
+
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const startBearing = this.map.getBearing();
+      const startPitch = this.map.getPitch();
+
+      const onMouseMove = (moveEvent: MouseEvent) => {
+        if (!this.map) return;
+        const dx = moveEvent.clientX - startX;
+        const dy = moveEvent.clientY - startY;
+        const newBearing = (startBearing + dx * 0.45) % 360;
+        const newPitch = Math.max(0, Math.min(85, startPitch - dy * 0.45));
+        this.map.setBearing(newBearing);
+        this.map.setPitch(newPitch);
+      };
+
+      const onMouseUp = (upEvent: MouseEvent) => {
+        if (upEvent.button !== 1) return;
+        window.removeEventListener('mousemove', onMouseMove);
+        window.removeEventListener('mouseup', onMouseUp);
+      };
+
+      window.addEventListener('mousemove', onMouseMove);
+      window.addEventListener('mouseup', onMouseUp);
+    };
+
+    const onAuxClick = (e: MouseEvent) => {
+      if (e.button === 1) e.preventDefault();
+    };
+
+    container.addEventListener('mousedown', onMouseDown);
+    container.addEventListener('auxclick', onAuxClick);
+
+    this.middleMouseDownCleanup = () => {
+      container.removeEventListener('mousedown', onMouseDown);
+      container.removeEventListener('auxclick', onAuxClick);
+    };
+  }
+
   destroy(): void {
     log('destroy()');
+    this.middleMouseDownCleanup?.();
+    this.middleMouseDownCleanup = null;
     this.sourcePreview?.remove();
     this.sourcePreview = null;
     this.map?.remove();
@@ -261,6 +311,34 @@ export class MapLibreAdapter implements IMapEngine {
         else reject(new Error('toBlob failed'));
       }, 'image/png');
     });
+  }
+
+  setProjection(projection: 'mercator' | 'globe'): void {
+    if (!this.map) return;
+    try {
+      (this.map as any).setProjection({ type: projection });
+      const container = this.map.getContainer();
+      if (container) {
+        if (projection === 'globe') {
+          container.style.backgroundColor = '#020611';
+        } else {
+          container.style.backgroundColor = '';
+        }
+      }
+      log(`projection set to ${projection}`);
+    } catch (err) {
+      console.error('[MapLibreAdapter] setProjection failed:', err);
+    }
+  }
+
+  getProjection(): 'mercator' | 'globe' {
+    if (!this.map) return 'mercator';
+    try {
+      const proj = (this.map as any).getProjection?.();
+      return proj?.type === 'globe' ? 'globe' : 'mercator';
+    } catch {
+      return 'mercator';
+    }
   }
 
   getNative(): unknown {

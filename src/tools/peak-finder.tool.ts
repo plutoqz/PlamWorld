@@ -15,7 +15,7 @@ export interface PeakInfo {
   distance: number;   // km
   bearing: number;    // deg from view point
   visible: boolean;
-  source?: 'catalog' | 'dem';
+  source?: 'catalog' | 'dem' | 'osm';
 }
 
 export class PeakFinderTool implements MapTool {
@@ -113,61 +113,232 @@ export class PeakFinderTool implements MapTool {
 
   // ---- core: compute visible peaks ----
 
-  private computePeaks(): void {
-    if (!this._viewPoint) { this._peaks = []; return; }
-    const [vpLng, vpLat] = this._viewPoint;
-
-    const results: PeakInfo[] = [];
-    for (const p of PeakFinderTool.SAMPLE_PEAKS) {
-      const distKm = haversine(vpLat, vpLng, p.lat, p.lng);
-      if (distKm > this._searchRadius) continue;
-
-      const bearing = computeBearing(vpLat, vpLng, p.lat, p.lng);
-
-      // Simple visibility: check if the peak is above the horizon from observer height
-      // Earth curvature + observer height
-      const earthRadiusKm = 6371;
-      const horizonDist = Math.sqrt(2 * earthRadiusKm * (this._observerHeight / 1000));
-      const visible = distKm < horizonDist * 3 || p.elevation > 500; // simplified heuristic
-
-      results.push({
-        ...p,
-        distance: distKm,
-        bearing,
-        visible,
-        source: 'catalog',
-      });
-    }
-
-    // Sort by distance, visible first
-    results.sort((a, b) => {
-      if (a.visible !== b.visible) return a.visible ? -1 : 1;
-      return a.distance - b.distance;
-    });
-
-    this._peaks = results.slice(0, 20);
-  }
-
   private recompute(): void {
-    this.computePeaks();
-    this.notify();
-    if (this._peaks.length === 0 && this._viewPoint) {
-      void this.findHighestPoint(this._viewPoint);
+    if (!this._viewPoint) {
+      this._peaks = [];
+      this.notify();
+      return;
     }
+    void this.searchPeaks(this._viewPoint);
   }
 
-  private async findHighestPoint(viewPoint: LngLat): Promise<void> {
+  private async searchPeaks(viewPoint: LngLat): Promise<void> {
     this.searchController?.abort();
     const controller = new AbortController();
     this.searchController = controller;
     this._searching = true;
     this.notify();
 
+    const [vpLng, vpLat] = viewPoint;
+    const radiusM = Math.min(100, Math.max(5, this._searchRadius)) * 1000;
+
+    try {
+      // 1. 获取观察点地表高程 (用于精确计算视线地平线距离)
+      let observerGroundEle = 0;
+      try {
+        const obsEles = await queryElevations([viewPoint], {
+          signal: controller.signal,
+          resolutionMeters: 90,
+        });
+        if (obsEles && obsEles[0] !== null && Number.isFinite(obsEles[0])) {
+          observerGroundEle = Math.max(0, obsEles[0]);
+        }
+      } catch {
+        // 容错：使用 0m
+      }
+      if (controller.signal.aborted) return;
+
+      const totalObsHeight = observerGroundEle + Math.max(1, this._observerHeight);
+
+      // 2. 尝试从 Overpass API 获取真实自然山峰
+      let osmPeaks: PeakInfo[] = [];
+      const overpassEndpoints = [
+        'https://overpass-api.de/api/interpreter',
+        'https://overpass.kumi.systems/api/interpreter',
+      ];
+
+      const query = `[out:json][timeout:10];node(around:${radiusM},${vpLat},${vpLng})["natural"="peak"];out body 50;`;
+
+      for (const endpoint of overpassEndpoints) {
+        if (controller.signal.aborted) return;
+        try {
+          const resp = await fetch(endpoint, {
+            method: 'POST',
+            body: 'data=' + encodeURIComponent(query),
+            headers: {
+              'User-Agent': 'PalmWorld-WebMap/0.6 (https://github.com/plutoqz/PalmWorld)',
+            },
+            signal: AbortSignal.timeout(9000),
+          });
+
+          if (!resp.ok) continue;
+          const data = await resp.json();
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const elements: any[] = data.elements ?? [];
+          if (elements.length === 0) continue;
+
+          // 提取包含名称或高程的节点
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const namedElements = elements.filter(
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (e: any) =>
+              e.tags && (e.tags.name || e.tags['name:zh'] || e.tags['name:en'] || e.tags.ele),
+          );
+          if (namedElements.length === 0) continue;
+
+          // 需要通过 DEM 补齐高程的节点
+          const needEleCoords: { idx: number; coord: LngLat }[] = [];
+          const rawPeakList: {
+            name: string;
+            lat: number;
+            lng: number;
+            ele: number | null;
+          }[] = [];
+
+          namedElements.slice(0, 35).forEach((e, idx) => {
+            const name =
+              e.tags.name ||
+              e.tags['name:zh'] ||
+              e.tags['name:en'] ||
+              (e.tags.ele ? `${e.tags.ele}m 山峰` : '未命名峰');
+            const ele = e.tags.ele ? parseFloat(e.tags.ele) : null;
+            rawPeakList.push({
+              name,
+              lat: e.lat,
+              lng: e.lon,
+              ele: Number.isFinite(ele) ? ele : null,
+            });
+            if (ele === null || !Number.isFinite(ele)) {
+              needEleCoords.push({ idx, coord: [e.lon, e.lat] });
+            }
+          });
+
+          // 批量查询缺失的高程
+          if (needEleCoords.length > 0) {
+            try {
+              const queriedEles = await queryElevations(
+                needEleCoords.map((c) => c.coord),
+                { signal: controller.signal, resolutionMeters: 90 },
+              );
+              needEleCoords.forEach((item, qIdx) => {
+                const eleVal = queriedEles[qIdx];
+                if (eleVal !== null && Number.isFinite(eleVal)) {
+                  rawPeakList[item.idx]!.ele = Math.round(eleVal);
+                } else {
+                  rawPeakList[item.idx]!.ele = 300;
+                }
+              });
+            } catch {
+              needEleCoords.forEach((item) => {
+                rawPeakList[item.idx]!.ele = 300;
+              });
+            }
+          }
+
+          if (controller.signal.aborted) return;
+
+          // 计算距离、方位角与可见性
+          osmPeaks = rawPeakList.map((p) => {
+            const distKm = haversine(vpLat, vpLng, p.lat, p.lng);
+            const bearing = computeBearing(vpLat, vpLng, p.lat, p.lng);
+            const ele = p.ele ?? 300;
+
+            // 地球曲率视距公式 (km): 3.86 * (sqrt(h1) + sqrt(h2))
+            const maxSightDistKm =
+              3.86 * (Math.sqrt(totalObsHeight) + Math.sqrt(Math.max(0, ele)));
+            const visible = distKm <= maxSightDistKm;
+
+            return {
+              name: p.name,
+              lat: p.lat,
+              lng: p.lng,
+              elevation: ele,
+              distance: distKm,
+              bearing,
+              visible,
+              source: 'osm' as const,
+            };
+          });
+
+          if (osmPeaks.length > 0) break;
+        } catch {
+          // 尝试下一个端点
+        }
+      }
+
+      if (controller.signal.aborted) return;
+
+      if (osmPeaks.length > 0) {
+        // 排序：可见山峰优先，其次按距离由近及远
+        osmPeaks.sort((a, b) => {
+          if (a.visible !== b.visible) return a.visible ? -1 : 1;
+          return a.distance - b.distance;
+        });
+        this._peaks = osmPeaks.slice(0, 25);
+        return;
+      }
+
+      // 3. Overpass 无结果或离线：回退到内置名山库
+      const catalogResults: PeakInfo[] = [];
+      for (const p of PeakFinderTool.SAMPLE_PEAKS) {
+        const distKm = haversine(vpLat, vpLng, p.lat, p.lng);
+        if (distKm > this._searchRadius) continue;
+
+        const bearing = computeBearing(vpLat, vpLng, p.lat, p.lng);
+        const maxSightDistKm =
+          3.86 * (Math.sqrt(totalObsHeight) + Math.sqrt(Math.max(0, p.elevation)));
+        const visible = distKm <= maxSightDistKm;
+
+        catalogResults.push({
+          ...p,
+          distance: distKm,
+          bearing,
+          visible,
+          source: 'catalog',
+        });
+      }
+
+      if (catalogResults.length > 0) {
+        catalogResults.sort((a, b) => {
+          if (a.visible !== b.visible) return a.visible ? -1 : 1;
+          return a.distance - b.distance;
+        });
+        this._peaks = catalogResults.slice(0, 20);
+        return;
+      }
+
+      // 4. 内置名山库仍无匹配：回退到 DEM 网格搜索区域最高峰
+      await this.findHighestPoint(viewPoint, controller);
+    } catch (err) {
+      if (!controller.signal.aborted) {
+        console.warn('[PeakFinder] 搜索异常:', err);
+      }
+    } finally {
+      if (this.searchController === controller) {
+        this.searchController = null;
+        this._searching = false;
+        this.notify();
+      }
+    }
+  }
+
+  private async findHighestPoint(
+    viewPoint: LngLat,
+    existingController?: AbortController,
+  ): Promise<void> {
+    const controller = existingController ?? new AbortController();
+    if (!existingController) {
+      this.searchController?.abort();
+      this.searchController = controller;
+      this._searching = true;
+      this.notify();
+    }
+
     try {
       const gridSize = 11;
       const radiusKm = Math.min(50, this._searchRadius);
       const latSpan = radiusKm / 111.32;
-      const lngSpan = latSpan / Math.max(0.2, Math.cos(viewPoint[1] * Math.PI / 180));
+      const lngSpan = latSpan / Math.max(0.2, Math.cos((viewPoint[1] * Math.PI) / 180));
       const points: LngLat[] = [];
       for (let row = 0; row < gridSize; row++) {
         for (let col = 0; col < gridSize; col++) {
@@ -180,9 +351,14 @@ export class PeakFinderTool implements MapTool {
 
       const elevations = await queryElevations(points, {
         signal: controller.signal,
-        resolutionMeters: radiusKm * 2000 / (gridSize - 1),
+        resolutionMeters: (radiusKm * 2000) / (gridSize - 1),
       });
-      if (controller.signal.aborted || this._viewPoint?.[0] !== viewPoint[0] || this._viewPoint?.[1] !== viewPoint[1]) return;
+      if (
+        controller.signal.aborted ||
+        this._viewPoint?.[0] !== viewPoint[0] ||
+        this._viewPoint?.[1] !== viewPoint[1]
+      )
+        return;
 
       let highestIndex = -1;
       let highestElevation = -Infinity;
@@ -193,22 +369,24 @@ export class PeakFinderTool implements MapTool {
         }
       });
       if (highestIndex >= 0) {
-        const coordinate = points[highestIndex];
-        this._peaks = [{
-          name: '当前区域最高点',
-          lng: coordinate[0],
-          lat: coordinate[1],
-          elevation: highestElevation,
-          distance: haversine(viewPoint[1], viewPoint[0], coordinate[1], coordinate[0]),
-          bearing: computeBearing(viewPoint[1], viewPoint[0], coordinate[1], coordinate[0]),
-          visible: true,
-          source: 'dem',
-        }];
+        const coordinate = points[highestIndex]!;
+        this._peaks = [
+          {
+            name: '当前区域最高点',
+            lng: coordinate[0],
+            lat: coordinate[1],
+            elevation: highestElevation,
+            distance: haversine(viewPoint[1], viewPoint[0], coordinate[1], coordinate[0]),
+            bearing: computeBearing(viewPoint[1], viewPoint[0], coordinate[1], coordinate[0]),
+            visible: true,
+            source: 'dem',
+          },
+        ];
       }
     } catch (error) {
       if (!controller.signal.aborted) console.warn('[PeakFinder] DEM fallback failed:', error);
     } finally {
-      if (this.searchController === controller) {
+      if (!existingController && this.searchController === controller) {
         this.searchController = null;
         this._searching = false;
         this.notify();

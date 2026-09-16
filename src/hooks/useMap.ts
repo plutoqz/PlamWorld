@@ -5,6 +5,7 @@ import { useEffect, useRef } from 'react';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import * as maplibregl from 'maplibre-gl';
 import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?url';
+import { enableTerrain3D, disableTerrain3D } from '../engines/maplibre/terrain';
 import { Protocol } from 'pmtiles';
 import { MapLibreAdapter } from '../engines/maplibre/adapter';
 import { sourceRegistry } from '../sources/registry';
@@ -76,9 +77,38 @@ export function useMap() {
     // style.load 不依赖瓦片网络，作为交互就绪信号。
     const markReady = () => {
       useMapStore.getState().setEngineReady(true);
+      const map = engine.getNative() as maplibregl.Map;
+      if (map && useMapStore.getState().terrain3d) {
+        enableTerrain3D(map, 1.5);
+      }
+      if (useMapStore.getState().globe) {
+        engine.setProjection?.('globe');
+      }
     };
     engine.on('style.load', markReady);
     engine.on('load', markReady);
+
+    // 订阅 3D 地形开关状态变化
+    const unsubTerrain = useMapStore.subscribe((state, prevState) => {
+      if (state.terrain3d !== prevState.terrain3d) {
+        const map = engine.getNative() as maplibregl.Map;
+        if (!map) return;
+        if (state.terrain3d) {
+          enableTerrain3D(map, 1.5);
+          map.easeTo({ pitch: 60, duration: 600 });
+        } else {
+          disableTerrain3D(map);
+          map.easeTo({ pitch: 0, duration: 400 });
+        }
+      }
+    });
+
+    // 订阅地球仪模式开关状态变化
+    const unsubGlobe = useMapStore.subscribe((state, prevState) => {
+      if (state.globe !== prevState.globe) {
+        engine.setProjection?.(state.globe ? 'globe' : 'mercator');
+      }
+    });
 
     // idle 兜底（load 可能不触发）
     engine.on('idle', () => {
@@ -96,6 +126,8 @@ export function useMap() {
     });
 
     return () => {
+      unsubTerrain();
+      unsubGlobe();
       engine.off('style.load', markReady);
       engine.off('load', markReady);
       engine.destroy();

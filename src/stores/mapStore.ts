@@ -19,6 +19,9 @@ export interface MapState {
   // 3D 地形
   terrain3d: boolean;
 
+  // 地球仪模式
+  globe: boolean;
+
   // 引擎就绪
   engineReady: boolean;
 
@@ -28,6 +31,8 @@ export interface MapState {
   ) => void;
   switchSource: (sourceId: string) => void;
   toggleTerrain3d: () => void;
+  toggleGlobe: () => void;
+  setGlobe: (globe: boolean) => void;
   setEngineReady: (ready: boolean) => void;
 }
 
@@ -42,6 +47,7 @@ export const useMapStore = create<MapState>((set) => ({
   availableSources: sourceRegistry.list(),
 
   terrain3d: false,
+  globe: false,
   engineReady: false,
 
   setView: (view) => set((s) => ({ ...s, ...view })),
@@ -57,6 +63,10 @@ export const useMapStore = create<MapState>((set) => ({
   },
 
   toggleTerrain3d: () => set((s) => ({ terrain3d: !s.terrain3d })),
+
+  toggleGlobe: () => set((s) => ({ globe: !s.globe })),
+
+  setGlobe: (globe) => set({ globe }),
 
   setEngineReady: (ready) => set({ engineReady: ready }),
 }));

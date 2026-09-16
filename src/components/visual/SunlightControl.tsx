@@ -9,7 +9,9 @@ import type { SunlightShadowTool } from '@tools/sunlight-shadow.tool';
 
 const SUN_DEM_SOURCE = 'palm-sunlight-dem';
 const SUN_HILLSHADE_LAYER = 'palm-sunlight-hillshade';
-const TERRAIN_TILEJSON = 'https://demotiles.maplibre.org/terrain-tiles/tiles.json';
+const TERRARIUM_TILES = [
+  'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png',
+];
 
 interface SunlightControlProps {
   tool: SunlightShadowTool;
@@ -164,8 +166,10 @@ function applySunlight(map: maplibregl.Map, azimuth: number, altitude: number): 
     if (!map.getSource(SUN_DEM_SOURCE)) {
       map.addSource(SUN_DEM_SOURCE, {
         type: 'raster-dem',
-        url: TERRAIN_TILEJSON,
+        encoding: 'terrarium',
+        tiles: TERRARIUM_TILES,
         tileSize: 256,
+        maxzoom: 15,
       });
     }
     if (!map.getLayer(SUN_HILLSHADE_LAYER)) {

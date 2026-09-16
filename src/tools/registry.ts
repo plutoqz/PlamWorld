@@ -31,6 +31,7 @@ import { GeologyProfileTool } from './geology-profile.tool';
 import { DynastyOverlayTool } from './dynasty-overlay.tool';
 import { EcologyTool } from './ecology.tool';
 import { LiteraryMapTool } from './literary-map.tool';
+import { AdminBoundaryTool } from './admin-boundary.tool';
 
 export const toolRegistry = new ToolRegistry();
 
@@ -63,6 +64,7 @@ export const geologyProfileTool = new GeologyProfileTool();
 export const dynastyOverlayTool = new DynastyOverlayTool();
 export const ecologyTool = new EcologyTool();
 export const literaryMapTool = new LiteraryMapTool();
+export const adminBoundaryTool = new AdminBoundaryTool();
 
 toolRegistry.registerAll([
   searchTool,
@@ -95,4 +97,5 @@ toolRegistry.registerAll([
   dynastyOverlayTool,
   ecologyTool,
   literaryMapTool,
+  adminBoundaryTool,
 ]);

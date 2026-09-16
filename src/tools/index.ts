@@ -9,7 +9,7 @@ export {
   sunlightShadowTool, peakFinderTool, storyMapTool, geoGuessrTool,
   buildings3DTool, hydrologyTool, placeSummaryTool, nlSearchTool, imageAnalysisTool,
   enhancedViewshedTool, routePlannerTool, geologyProfileTool, dynastyOverlayTool, ecologyTool,
-  literaryMapTool,
+  literaryMapTool, adminBoundaryTool,
 } from './registry';
 
 export { LocateTool } from './locate.tool';
@@ -42,3 +42,4 @@ export { GeologyProfileTool } from './geology-profile.tool';
 export { DynastyOverlayTool } from './dynasty-overlay.tool';
 export { EcologyTool } from './ecology.tool';
 export { LiteraryMapTool } from './literary-map.tool';
+export { AdminBoundaryTool } from './admin-boundary.tool';

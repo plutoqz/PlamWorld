@@ -458,3 +458,150 @@ export const MIGRATION_ROUTES: MigrationRoute[] = [
     },
   },
 ];
+
+// ---- GBIF API 全球生物多样性实地观测查询 ----
+
+export interface GBIFOccurrence {
+  key: number;
+  scientificName: string;
+  vernacularName?: string;
+  species?: string;
+  genus?: string;
+  family?: string;
+  order?: string;
+  class?: string;
+  kingdom?: string;
+  category: SpeciesCategory;
+  iucnStatus: IUCNStatus;
+  lat: number;
+  lng: number;
+  eventDate?: string;
+  mediaUrl?: string;
+  recordedBy?: string;
+  basisOfRecord?: string;
+  datasetName?: string;
+}
+
+export interface GBIFSearchParams {
+  bounds: [minLng: number, minLat: number, maxLng: number, maxLat: number];
+  category?: SpeciesCategory | 'all';
+  iucnStatus?: IUCNStatus[];
+  hasMediaOnly?: boolean;
+  limit?: number;
+  signal?: AbortSignal;
+}
+
+export async function searchGBIFOccurrences(
+  params: GBIFSearchParams,
+): Promise<{ occurrences: GBIFOccurrence[]; count: number }> {
+  const [minLng, minLat, maxLng, maxLat] = params.bounds;
+  const limit = Math.min(50, params.limit ?? 25);
+
+  const url = new URL('https://api.gbif.org/v1/occurrence/search');
+  url.searchParams.set('decimalLatitude', `${minLat.toFixed(4)},${maxLat.toFixed(4)}`);
+  url.searchParams.set('decimalLongitude', `${minLng.toFixed(4)},${maxLng.toFixed(4)}`);
+  url.searchParams.set('hasCoordinate', 'true');
+  if (params.hasMediaOnly ?? true) {
+    url.searchParams.set('hasMedia', 'true');
+  }
+  url.searchParams.set('limit', String(limit));
+
+  if (params.category && params.category !== 'all') {
+    switch (params.category) {
+      case 'mammal':
+        url.searchParams.set('class', 'Mammalia');
+        break;
+      case 'bird':
+        url.searchParams.set('class', 'Aves');
+        break;
+      case 'reptile':
+        url.searchParams.set('class', 'Reptilia');
+        break;
+      case 'amphibian':
+        url.searchParams.set('class', 'Amphibia');
+        break;
+      case 'fish':
+        url.searchParams.set('class', 'Actinopterygii');
+        break;
+      case 'plant':
+        url.searchParams.set('kingdom', 'Plantae');
+        break;
+    }
+  }
+
+  const resp = await fetch(url.toString(), {
+    signal: params.signal ?? AbortSignal.timeout(10000),
+  });
+  if (!resp.ok) throw new Error(`GBIF HTTP ${resp.status}`);
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const data: any = await resp.json();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const results: any[] = data.results ?? [];
+
+  const occurrences: GBIFOccurrence[] = results
+    .filter((item) => item.decimalLatitude != null && item.decimalLongitude != null)
+    .map((item) => {
+      // 分类判定
+      let cat: SpeciesCategory = 'mammal';
+      const c = (item.class || '').toLowerCase();
+      const k = (item.kingdom || '').toLowerCase();
+      if (k === 'plantae') cat = 'plant';
+      else if (c.includes('aves') || c.includes('bird')) cat = 'bird';
+      else if (c.includes('reptil')) cat = 'reptile';
+      else if (c.includes('amphib')) cat = 'amphibian';
+      else if (
+        c.includes('actinopterygii') ||
+        c.includes('fish') ||
+        c.includes('chondrichthyes')
+      )
+        cat = 'fish';
+      else cat = 'mammal';
+
+      // 红色名录等级
+      const rawIucn = (item.iucnRedListCategory || '').toUpperCase();
+      let iucn: IUCNStatus = 'LC';
+      if (['CR', 'EN', 'VU', 'NT', 'LC'].includes(rawIucn)) {
+        iucn = rawIucn as IUCNStatus;
+      }
+
+      // 媒体照片
+      let mediaUrl: string | undefined;
+      if (Array.isArray(item.media) && item.media.length > 0) {
+        mediaUrl = item.media[0].identifier;
+      }
+
+      return {
+        key: item.key,
+        scientificName: item.scientificName || item.species || '未知物种',
+        vernacularName: item.vernacularName,
+        species: item.species,
+        genus: item.genus,
+        family: item.family,
+        order: item.order,
+        class: item.class,
+        kingdom: item.kingdom,
+        category: cat,
+        iucnStatus: iucn,
+        lat: item.decimalLatitude,
+        lng: item.decimalLongitude,
+        eventDate: item.eventDate,
+        mediaUrl,
+        recordedBy: item.recordedBy,
+        basisOfRecord: item.basisOfRecord,
+        datasetName: item.datasetName,
+      };
+    });
+
+  // 若设置了 IUCN 过滤
+  const filtered =
+    params.iucnStatus && params.iucnStatus.length > 0
+      ? occurrences.filter((o) => params.iucnStatus!.includes(o.iucnStatus))
+      : occurrences;
+
+  return {
+    occurrences: filtered,
+    count: data.count ?? occurrences.length,
+  };
+}
+

@@ -68,10 +68,16 @@ export function PeakLabels({ tool }: PeakLabelsProps) {
       const element = document.createElement('button');
       element.type = 'button';
       element.title = `定位到${peak.name}`;
+      const bg =
+        peak.source === 'osm'
+          ? '#059669'
+          : peak.source === 'dem'
+            ? '#dc2626'
+            : '#2563eb';
       element.style.cssText = [
         'border:2px solid #fff',
         'border-radius:4px',
-        `background:${peak.source === 'dem' ? '#ef4444' : '#263238'}`,
+        `background:${bg}`,
         'color:#fff',
         'padding:4px 7px',
         'font:700 11px sans-serif',
@@ -131,13 +137,14 @@ export function PeakLabels({ tool }: PeakLabelsProps) {
 
       {viewPoint && searching && (
         <div className="pw-panel-status is-warning">
-          <LoaderCircle size={14} /><span>峰库无匹配，正在搜索当前区域最高点</span>
+          <LoaderCircle size={14} className="pw-spin" />
+          <span>正在检索周边真实山峰及通视情况...</span>
         </div>
       )}
 
       {viewPoint && !searching && peaks.length === 0 && (
         <div className="pw-panel-status is-danger">
-          <AlertCircle size={14} /><span>当前区域没有可用高程数据</span>
+          <AlertCircle size={14} /><span>当前区域未检索到山峰数据</span>
         </div>
       )}
 
@@ -155,7 +162,7 @@ export function PeakLabels({ tool }: PeakLabelsProps) {
       {hiddenPeaks.length > 0 && (
         <details>
           <summary style={{ fontSize: 10, color: 'rgba(255,255,255,0.25)', cursor: 'pointer' }}>
-            被遮挡 / 超出距离 ({hiddenPeaks.length})
+            被遮挡 / 超出视距 ({hiddenPeaks.length})
           </summary>
           {hiddenPeaks.map((p, i) => (
             <PeakRow key={i} peak={p} bearingLabel={bearingLabel} onClick={() => handleGoTo(p)} dimmed />
@@ -169,6 +176,13 @@ export function PeakLabels({ tool }: PeakLabelsProps) {
 function PeakRow({ peak, bearingLabel, onClick, dimmed }: {
   peak: PeakInfo; bearingLabel: (d: number) => string; onClick: () => void; dimmed?: boolean;
 }) {
+  const sourceLabel =
+    peak.source === 'osm'
+      ? ' · OpenStreetMap'
+      : peak.source === 'dem'
+        ? ' · DEM 最高点'
+        : ' · 名山库';
+
   return (
     <button onClick={onClick} style={{
       display: 'flex', justifyContent: 'space-between', alignItems: 'center',
@@ -181,7 +195,7 @@ function PeakRow({ peak, bearingLabel, onClick, dimmed }: {
         <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.85)', fontWeight: 500 }}>{peak.name}</div>
         <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.35)' }}>
           {peak.elevation.toLocaleString()}m · {peak.distance.toFixed(1)}km · {bearingLabel(peak.bearing)}
-          {peak.source === 'dem' ? ' · DEM 最高点' : ''}
+          {sourceLabel}
         </div>
       </div>
     </button>

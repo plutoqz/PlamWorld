@@ -168,39 +168,153 @@ const MACROSTRAT_BASE = 'https://macrostrat.org/api/v2';
 export async function fetchGeoUnits(
   lng: number,
   lat: number,
-  radiusKm = 5,
+  _radiusKm = 5,
 ): Promise<{ units: GeoUnit[]; source: 'api' | 'mock'; error?: string }> {
+  // 1. 尝试区域详细地层柱 (Measured Sections / Stratigraphic Columns)
   try {
-    const url = `${MACROSTRAT_BASE}/geologic_units?lat=${lat}&lng=${lng}&radius=${radiusKm * 1000}&format=json&response=long`;
-    const resp = await fetch(url, { signal: AbortSignal.timeout(8000) });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const data = await resp.json();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const units = (data.success?.data ?? []).map((item: any) => parseMacrostratUnit(item));
-    return { units, source: units.length > 0 ? 'api' : 'mock' };
-  } catch (err) {
-    // 降级：返回空 units → 调用方使用内置模拟数据
-    return { units: [], source: 'mock', error: err instanceof Error ? err.message : 'API 不可达' };
+    const url = `${MACROSTRAT_BASE}/units?lat=${lat}&lng=${lng}&response=long`;
+    const resp = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    if (resp.ok) {
+      const data = await resp.json();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const rawUnits: any[] = data.success?.data ?? [];
+      if (rawUnits.length > 0) {
+        // 按年代由新到老排序（t_age 升序）
+        rawUnits.sort((a, b) => (Number(a.t_age) || 0) - (Number(b.t_age) || 0));
+        let currDepth = 0;
+        const units: GeoUnit[] = rawUnits.slice(0, 6).map((item) => {
+          const rawThick = Number(item.max_thick) || (Number(item.b_age) > 0 ? 80 : 50);
+          const thicknessM = Math.min(500, Math.max(25, rawThick));
+          const top = -currDepth;
+          currDepth += thicknessM;
+
+          let lithText = '';
+          if (Array.isArray(item.lith) && item.lith.length > 0) {
+            lithText = item.lith[0].name || item.lith[0].lith || '';
+          } else if (typeof item.lith === 'string') {
+            lithText = item.lith;
+          }
+          const lithology = classifyLithology(lithText);
+          const era = classifyEra(item.b_age ?? item.t_int_name ?? item.b_int_name);
+          let name = item.strat_name_long || item.strat_name || item.unit_name || '';
+          if (!name || name === 'Unnamed') {
+            name = `${ERA_LABELS[era]} ${LITHOLOGY_LABELS[lithology]}层`;
+          }
+
+          return {
+            name,
+            era,
+            lithology,
+            topDepthM: top,
+            bottomDepthM: -currDepth,
+            thicknessM,
+            description: item.notes || item.outcrop ? `露头: ${item.outcrop}` : undefined,
+          };
+        });
+
+        if (units.length > 0) {
+          return { units, source: 'api' };
+        }
+      }
+    }
+  } catch {
+    // 忽略异常，继续尝试空间地质图查询
   }
+
+  // 2. 尝试空间地层图源查询 (map_query_v2: z=10 高精度 → z=4 全球概略)
+  for (const z of [10, 4]) {
+    try {
+      const url = `${MACROSTRAT_BASE}/mobile/map_query_v2?lat=${lat}&lng=${lng}&z=${z}`;
+      const resp = await fetch(url, { signal: AbortSignal.timeout(5000) });
+      if (resp.ok) {
+        const data = await resp.json();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const mapData: any[] = data.success?.data?.mapData ?? [];
+        if (mapData.length > 0) {
+          const item = mapData[0];
+          const era = classifyEra(item.b_int?.b_age ?? item.b_int?.int_name ?? item.age);
+          let currDepth = 0;
+
+          // 若包含多岩性，拆解为竖直层序
+          if (Array.isArray(item.liths) && item.liths.length > 1) {
+            const liths = item.liths.slice(0, 5);
+            const totalThick = Math.min(
+              600,
+              Math.max(150, Number(item.macrostrat?.max_thick) || liths.length * 60),
+            );
+            const subThick = Math.round(totalThick / liths.length);
+            const units: GeoUnit[] = liths.map((l: { lith?: string; name?: string }) => {
+              const top = -currDepth;
+              currDepth += subThick;
+              const cl = classifyLithology(l.lith || l.name || '');
+              const baseName = item.strat_name || item.name || '地层单元';
+              const name = `${baseName} (${LITHOLOGY_LABELS[cl]})`;
+              return {
+                name,
+                era,
+                lithology: cl,
+                topDepthM: top,
+                bottomDepthM: -currDepth,
+                thicknessM: subThick,
+                description: item.descrip || item.comments || `${item.name || ''} (${item.age || ''})`,
+              };
+            });
+            return { units, source: 'api' };
+          }
+
+          // 单一岩性或无详细岩性
+          const cl = classifyLithology(item.liths?.[0]?.lith || item.lith || '');
+          let baseName = item.strat_name || item.name || '';
+          if (!baseName || baseName === 'Unnamed') {
+            baseName = `${ERA_LABELS[era]} ${LITHOLOGY_LABELS[cl]}层`;
+          }
+          return {
+            units: [
+              {
+                name: baseName,
+                era,
+                lithology: cl,
+                topDepthM: 0,
+                bottomDepthM: -200,
+                thicknessM: 200,
+                description: item.descrip || item.comments || `${item.name || ''} (${item.age || ''})`,
+              },
+            ],
+            source: 'api',
+          };
+        }
+      }
+    } catch {
+      // 忽略，继续
+    }
+  }
+
+  // 3. 降级：无数据或公海
+  return { units: [], source: 'mock', error: '当前区域无 Macrostrat 地质测绘数据' };
 }
 
-/** 解析 Macrostrat 返回的单元数据 */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function parseMacrostratUnit(item: any): GeoUnit {
-  const lith = item.lith ?? item.lithology ?? item.rock_type ?? '';
-  return {
-    name: item.strat_name ?? item.unit_name ?? item.name ?? 'Unknown Unit',
-    era: classifyEra(item.age_bottom ?? item.max_age ?? 500),
-    lithology: classifyLithology(lith),
-    topDepthM: -(item.top_depth ?? item.t_depth ?? 0),
-    bottomDepthM: -(item.bottom_depth ?? item.b_depth ?? 100),
-    thicknessM: (item.bottom_depth ?? 100) - (item.top_depth ?? 0),
-    description: item.desc ?? item.description,
-  };
-}
-
-/** 根据年龄(百万年)推断地质年代 */
-function classifyEra(ageMa: number): GeologicEra {
+/** 根据年龄(百万年或文本)推断地质年代 */
+export function classifyEra(age: number | string | undefined): GeologicEra {
+  if (typeof age === 'string') {
+    const s = age.toLowerCase();
+    if (s.includes('quatern') || s.includes('holocene') || s.includes('pleistocene')) return 'Quaternary';
+    if (s.includes('neogene') || s.includes('pliocene') || s.includes('miocene')) return 'Neogene';
+    if (s.includes('paleogene') || s.includes('oligocene') || s.includes('eocene') || s.includes('paleocene')) return 'Paleogene';
+    if (s.includes('cenozoic')) return 'Neogene';
+    if (s.includes('cretaceous')) return 'Cretaceous';
+    if (s.includes('jurassic')) return 'Jurassic';
+    if (s.includes('triassic')) return 'Triassic';
+    if (s.includes('mesozoic')) return 'Jurassic';
+    if (s.includes('permian')) return 'Permian';
+    if (s.includes('carboniferous') || s.includes('pennsylvanian') || s.includes('mississippian')) return 'Carboniferous';
+    if (s.includes('devonian')) return 'Devonian';
+    if (s.includes('silurian')) return 'Silurian';
+    if (s.includes('ordovician')) return 'Ordovician';
+    if (s.includes('cambrian')) return 'Cambrian';
+    if (s.includes('paleozoic')) return 'Devonian';
+    if (s.includes('precambrian') || s.includes('proterozoic') || s.includes('archean')) return 'Precambrian';
+  }
+  const ageMa = typeof age === 'number' ? age : Number(age) || 500;
   if (ageMa < 2.58) return 'Quaternary';
   if (ageMa < 23) return 'Neogene';
   if (ageMa < 66) return 'Paleogene';
@@ -217,24 +331,25 @@ function classifyEra(ageMa: number): GeologicEra {
 }
 
 /** 岩性文本 → Lithology 枚举 */
-function classifyLithology(text: string): Lithology {
+export function classifyLithology(text: string): Lithology {
   const lower = text.toLowerCase();
-  if (lower.includes('sandstone') || lower.includes('sand')) return 'sandstone';
-  if (lower.includes('limestone') || lower.includes('lime')) return 'limestone';
-  if (lower.includes('shale') || lower.includes('mudstone')) return 'shale';
-  if (lower.includes('granite')) return 'granite';
-  if (lower.includes('basalt')) return 'basalt';
+  if (lower.includes('sandstone') || lower.includes('sand') || lower.includes('arenite')) return 'sandstone';
+  if (lower.includes('limestone') || lower.includes('lime') || lower.includes('chalk') || lower.includes('calc')) return 'limestone';
+  if (lower.includes('shale') || lower.includes('mudstone') || lower.includes('slate') || lower.includes('claystone') || lower.includes('argillite')) return 'shale';
+  if (lower.includes('granite') || lower.includes('granodiorite') || lower.includes('pegmatite') || lower.includes('plutonic') || lower.includes('intrusive')) return 'granite';
+  if (lower.includes('basalt') || lower.includes('andesite') || lower.includes('rhyolite') || lower.includes('volcanic') || lower.includes('extrusive') || lower.includes('dolerite') || lower.includes('gabbro')) return 'basalt';
   if (lower.includes('gneiss')) return 'gneiss';
-  if (lower.includes('schist')) return 'schist';
+  if (lower.includes('schist') || lower.includes('phyllite') || lower.includes('metamorphic')) return 'schist';
   if (lower.includes('marble')) return 'marble';
-  if (lower.includes('quartzite')) return 'quartzite';
-  if (lower.includes('conglomerate')) return 'conglomerate';
+  if (lower.includes('quartzite') || lower.includes('chert') || lower.includes('quartz')) return 'quartzite';
+  if (lower.includes('conglomerate') || lower.includes('breccia')) return 'conglomerate';
   if (lower.includes('siltstone') || lower.includes('silt')) return 'siltstone';
-  if (lower.includes('dolomite') || lower.includes('dolostone')) return 'dolomite';
-  if (lower.includes('clay')) return 'clay';
-  if (lower.includes('gravel')) return 'gravel';
-  if (lower.includes('loess')) return 'loess';
-  if (lower.includes('coal')) return 'coal';
+  if (lower.includes('dolomite') || lower.includes('dolostone') || lower.includes('gypsum') || lower.includes('evaporite') || lower.includes('anhydrite')) return 'dolomite';
+  if (lower.includes('clay') || lower.includes('marl')) return 'clay';
+  if (lower.includes('gravel') || lower.includes('alluvium') || lower.includes('colluvium') || lower.includes('debris')) return 'gravel';
+  if (lower.includes('loess') || lower.includes('silt-sand')) return 'loess';
+  if (lower.includes('coal') || lower.includes('lignite') || lower.includes('anthracite') || lower.includes('peat')) return 'coal';
+  if (lower.includes('sedimentary')) return 'sandstone';
   return 'unknown';
 }
 

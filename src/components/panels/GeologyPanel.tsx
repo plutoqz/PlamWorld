@@ -216,16 +216,10 @@ export function GeologyPanel({ tool }: GeologyPanelProps) {
             const result = await fetchGeoUnits(lng, lat, 5);
             if (result.source === 'api' && result.units.length > 0) {
               units = result.units;
+              setGeoApiError(null);
             } else {
               units = generateMockGeology(lng, lat);
-              tool.setMockMode(true);
-              setGeoApiError(result.error ?? '无数据');
-              // 首次降级时打印原因
-              if (!mockMode) {
-                console.warn(
-                  `[Geology] Macrostrat API 不可用 (${result.error ?? '无数据'})，降级为模拟数据`,
-                );
-              }
+              setGeoApiError(result.error ?? '部分区域无详细地质数据');
             }
           }
         } else if (geoPoints.length > 0) {

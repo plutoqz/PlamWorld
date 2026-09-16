@@ -27,14 +27,20 @@ export interface RoutePlannerState {
   travelMode: TravelMode;
   /** 路径：起点 */
   start: LngLat | null;
+  /** 路径：中转途经点列表 */
+  waypoints: LngLat[];
   /** 路径：终点 */
   end: LngLat | null;
   /** 等时线：中心点 */
   isochroneCenter: LngLat | null;
   /** 等时线时间阈值 (min) */
   isochroneThresholds: number[];
-  /** 最新路径结果 */
+  /** 当前选中的主路径结果 */
   routeResult: RouteResult | null;
+  /** 全部候选路线列表（含推荐走大路、近道、少路口等） */
+  routes: RouteResult[];
+  /** 当前选中的路线索引（默认 0） */
+  selectedRouteIndex: number;
   /** 最新等时线结果 */
   isochroneResult: IsochroneContour[] | null;
 }
@@ -43,10 +49,13 @@ const DEFAULT_STATE: RoutePlannerState = {
   mode: 'route',
   travelMode: 'walking',
   start: null,
+  waypoints: [],
   end: null,
   isochroneCenter: null,
   isochroneThresholds: [5, 10, 20, 30, 60],
   routeResult: null,
+  routes: [],
+  selectedRouteIndex: 0,
   isochroneResult: null,
 };
 
@@ -90,12 +99,42 @@ export class RoutePlannerTool implements MapTool {
   setStart(pt: LngLat | null): void {
     this.state.start = pt;
     this.state.routeResult = null;
+    this.state.routes = [];
+    this.state.selectedRouteIndex = 0;
     this.notify();
   }
 
   setEnd(pt: LngLat | null): void {
     this.state.end = pt;
     this.state.routeResult = null;
+    this.state.routes = [];
+    this.state.selectedRouteIndex = 0;
+    this.notify();
+  }
+
+  addWaypoint(pt: LngLat): void {
+    this.state.waypoints = [...this.state.waypoints, pt];
+    this.state.routeResult = null;
+    this.state.routes = [];
+    this.state.selectedRouteIndex = 0;
+    this.notify();
+  }
+
+  removeWaypoint(index: number): void {
+    if (index >= 0 && index < this.state.waypoints.length) {
+      this.state.waypoints = this.state.waypoints.filter((_, i) => i !== index);
+      this.state.routeResult = null;
+      this.state.routes = [];
+      this.state.selectedRouteIndex = 0;
+      this.notify();
+    }
+  }
+
+  clearWaypoints(): void {
+    this.state.waypoints = [];
+    this.state.routeResult = null;
+    this.state.routes = [];
+    this.state.selectedRouteIndex = 0;
     this.notify();
   }
 
@@ -110,8 +149,25 @@ export class RoutePlannerTool implements MapTool {
     this.notify();
   }
 
+  setRoutes(routes: RouteResult[], selectedIndex = 0): void {
+    this.state.routes = routes;
+    this.state.selectedRouteIndex = selectedIndex;
+    this.state.routeResult = routes[selectedIndex] ?? null;
+    this.notify();
+  }
+
+  selectRoute(index: number): void {
+    if (index >= 0 && index < this.state.routes.length) {
+      this.state.selectedRouteIndex = index;
+      this.state.routeResult = this.state.routes[index] ?? null;
+      this.notify();
+    }
+  }
+
   setRouteResult(result: RouteResult | null): void {
     this.state.routeResult = result;
+    this.state.routes = result ? [result] : [];
+    this.state.selectedRouteIndex = 0;
     this.notify();
   }
 
