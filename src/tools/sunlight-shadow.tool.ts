@@ -69,6 +69,14 @@ export class SunlightShadowTool implements MapTool {
 
   setPlaySpeed(s: number): void {
     this._playSpeed = s;
+    if (this._playing) {
+      this.startPlay();
+    }
+    this.notify();
+  }
+
+  resetToNow(): void {
+    this._date = new Date();
     this.notify();
   }
 
@@ -76,12 +84,13 @@ export class SunlightShadowTool implements MapTool {
 
   private startPlay(): void {
     this.stopPlay();
+    const intervalMs = 200; // 5fps fluid time step
     this._playTimer = setInterval(() => {
-      const mins = this._date.getMinutes() + this._playSpeed;
-      this._date.setMinutes(mins);
-      if (this._date.getHours() >= 24) this._date.setHours(0);
+      // Advance proportionally by playSpeed (minutes per second)
+      const deltaMins = (this._playSpeed * intervalMs) / 1000;
+      this._date = new Date(this._date.getTime() + deltaMins * 60 * 1000);
       this.notify();
-    }, 1000);
+    }, intervalMs);
   }
 
   private stopPlay(): void {
