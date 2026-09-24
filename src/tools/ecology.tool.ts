@@ -3,8 +3,8 @@
 // 物种分布多边形 + GBIF 实地观测探索 + 迁徙路线动画 + IUCN 热力
 
 import type { MapTool, ToolContext } from '../core/tools';
-import type { SpeciesCategory, IUCNStatus, GBIFOccurrence } from '../core/ecology';
-import { SPECIES, MIGRATION_ROUTES, searchGBIFOccurrences } from '../core/ecology';
+import type { SpeciesCategory, IUCNStatus, GBIFOccurrence, BiodiversityHotspot } from '../core/ecology';
+import { SPECIES, MIGRATION_ROUTES, BIODIVERSITY_HOTSPOTS, searchGBIFOccurrences } from '../core/ecology';
 
 // ---- 工具状态 ----
 
@@ -25,6 +25,8 @@ export interface EcologyState {
   iucnFilter: IUCNStatus[];
   /** 当前高亮物种 */
   highlightSpeciesId: string | null;
+  /** 当前选中的保护热点 */
+  activeHotspotId: string | null;
   /** 迁徙动画播放 */
   isPlaying: boolean;
   /** 动画速度倍率 */
@@ -44,6 +46,7 @@ const DEFAULT_STATE: EcologyState = {
   categoryFilter: 'all',
   iucnFilter: ['CR', 'EN', 'VU'],
   highlightSpeciesId: null,
+  activeHotspotId: null,
   isPlaying: false,
   animationSpeed: 100,
   occurrences: [],
@@ -104,6 +107,11 @@ export class EcologyTool implements MapTool {
     this.notify();
   }
 
+  setActiveHotspot(id: string | null): void {
+    this.state.activeHotspotId = id;
+    this.notify();
+  }
+
   setPlaying(v: boolean): void {
     this.state.isPlaying = v;
     this.notify();
@@ -131,6 +139,10 @@ export class EcologyTool implements MapTool {
 
   getAllRoutes() {
     return MIGRATION_ROUTES;
+  }
+
+  getAllHotspots(): BiodiversityHotspot[] {
+    return BIODIVERSITY_HOTSPOTS;
   }
 
   /** 查询指定空间范围内的 GBIF 真实物种实地观测记录 */

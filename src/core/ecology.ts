@@ -605,3 +605,166 @@ export async function searchGBIFOccurrences(
   };
 }
 
+// ---- 全球生物多样性保护热点 (Biodiversity Hotspots) ----
+
+export interface BiodiversityHotspot {
+  id: string;
+  name: string;
+  nameZh: string;
+  threatLevel: 'Critical' | 'High';
+  areaKm2: number;
+  speciesRichness: number;
+  endemicSpecies: number;
+  keyReserves: string[];
+  polygon: Polygon;
+  description: string;
+}
+
+export const BIODIVERSITY_HOTSPOTS: BiodiversityHotspot[] = [
+  {
+    id: 'sw-china',
+    name: 'Mountains of Southwest China',
+    nameZh: '中国西南山地热点',
+    threatLevel: 'Critical',
+    areaKm2: 262000,
+    speciesRichness: 12000,
+    endemicSpecies: 3500,
+    keyReserves: ['卧龙国家级自然保护区', '九寨沟保护区', '三江并流世界自然遗产', '稻城亚丁保护区'],
+    description: '涵盖四川西部、云南西北部和西藏东南部横断山脉，是全球温带针阔混交林植物区系最丰富区域，也是大熊猫、川金丝猴、雪豹的核心家园。',
+    polygon: {
+      type: 'Polygon',
+      coordinates: [[
+        [98.0, 24.5], [103.5, 25.5], [105.0, 29.5], [104.5, 33.5],
+        [102.0, 34.5], [97.5, 32.5], [96.0, 29.0], [98.0, 24.5],
+      ]],
+    },
+  },
+  {
+    id: 'himalaya',
+    name: 'Himalaya Hotspot',
+    nameZh: '喜马拉雅生物多样性热点',
+    threatLevel: 'Critical',
+    areaKm2: 741000,
+    speciesRichness: 10000,
+    endemicSpecies: 3160,
+    keyReserves: ['珠穆朗玛峰国家级自然保护区', '雅鲁藏布大峡谷保护区', '萨加玛塔国家公园'],
+    description: '横跨喜马拉雅山脉南北两麓，垂直高差悬殊，从亚热带雨林到永久冰雪带，保存有极为丰富的古老高山孑遗动植物群落。',
+    polygon: {
+      type: 'Polygon',
+      coordinates: [[
+        [74.0, 35.5], [80.0, 31.0], [88.0, 28.5], [95.5, 29.5],
+        [96.5, 27.5], [89.0, 26.5], [80.0, 28.0], [74.0, 33.5], [74.0, 35.5],
+      ]],
+    },
+  },
+  {
+    id: 'indo-burma',
+    name: 'Indo-Burma Hotspot',
+    nameZh: '印缅热点 (滇南与中南半岛)',
+    threatLevel: 'Critical',
+    areaKm2: 2373000,
+    speciesRichness: 13500,
+    endemicSpecies: 7000,
+    keyReserves: ['西双版纳热带雨林国家级保护区', '高黎贡山自然保护区', '考艾国家公园'],
+    description: '包含云南南部、西双版纳与整个中南半岛，拥有全球最丰富多样的热带季雨林群落，亚洲象、绿孔雀、白颊长臂猿的关键庇护地。',
+    polygon: {
+      type: 'Polygon',
+      coordinates: [[
+        [92.5, 22.0], [98.0, 25.5], [101.5, 23.0], [108.5, 21.5],
+        [107.0, 10.5], [100.0, 8.5], [98.0, 15.0], [92.5, 22.0],
+      ]],
+    },
+  },
+  {
+    id: 'congo-basin',
+    name: 'Congo Basin Forests',
+    nameZh: '刚果盆地热带雨林',
+    threatLevel: 'High',
+    areaKm2: 1780000,
+    speciesRichness: 11000,
+    endemicSpecies: 2300,
+    keyReserves: ['维龙加国家公园 (Virunga)', '萨隆加国家公园 (Salonga)', '奥扎拉国家公园'],
+    description: '世界第二大连续热带雨林，被称为非洲的绿色心脏，是山地大猩猩、倭黑猩猩、非洲森林象的核心栖息家园。',
+    polygon: {
+      type: 'Polygon',
+      coordinates: [[
+        [11.0, 3.5], [18.0, 5.0], [28.0, 4.0], [30.0, -1.5],
+        [27.0, -7.0], [18.0, -5.0], [12.0, -2.0], [11.0, 3.5],
+      ]],
+    },
+  },
+  {
+    id: 'madagascar',
+    name: 'Madagascar & Indian Ocean Islands',
+    nameZh: '马达加斯加与印度洋岛屿群',
+    threatLevel: 'Critical',
+    areaKm2: 592000,
+    speciesRichness: 14000,
+    endemicSpecies: 11600,
+    keyReserves: ['马索亚拉国家公园', '安达西贝-曼塔迪亚保护区', '贝马拉哈清真石林'],
+    description: '与大陆隔离近9000万年，孕育了极高的特有物种率（植物89%、爬行动物92%、哺乳动物全部狐猴特有）。',
+    polygon: {
+      type: 'Polygon',
+      coordinates: [[
+        [43.0, -12.0], [49.5, -12.0], [50.5, -15.5], [48.0, -25.5],
+        [44.0, -25.5], [43.5, -20.0], [43.0, -12.0],
+      ]],
+    },
+  },
+  {
+    id: 'amazon-basin',
+    name: 'Amazon Rainforest',
+    nameZh: '亚马孙热带雨林大宝库',
+    threatLevel: 'High',
+    areaKm2: 6700000,
+    speciesRichness: 40000,
+    endemicSpecies: 25000,
+    keyReserves: ['雅乌国家公园 (Jaú)', '马努国家公园 (Manu)', '马米拉瓦保护区'],
+    description: '全球面积最大、生物多样性最丰富的热带雨林，拥有全球10%的已知物种，是地球最重要的碳汇与气候调节器。',
+    polygon: {
+      type: 'Polygon',
+      coordinates: [[
+        [-76.0, 3.0], [-60.0, 5.0], [-50.0, 1.0], [-48.0, -4.0],
+        [-52.0, -12.0], [-64.0, -15.0], [-74.0, -10.0], [-78.0, -4.0], [-76.0, 3.0],
+      ]],
+    },
+  },
+  {
+    id: 'coral-triangle',
+    name: 'Coral Triangle & Great Barrier Reef',
+    nameZh: '珊瑚大三角与大堡礁',
+    threatLevel: 'Critical',
+    areaKm2: 6000000,
+    speciesRichness: 6000,
+    endemicSpecies: 2200,
+    keyReserves: ['大堡礁海洋公园 (GBR)', '四王群岛海洋保护区 (Raja Ampat)', '图巴塔哈群礁'],
+    description: '全球海洋生物多样性中心，拥有全球76%的造礁珊瑚物种和3000多种珊瑚礁鱼类，海洋生态系统的孕育摇篮。',
+    polygon: {
+      type: 'Polygon',
+      coordinates: [[
+        [118.0, 18.0], [130.0, 10.0], [152.0, -5.0], [153.0, -24.0],
+        [142.0, -20.0], [130.0, -10.0], [115.0, -8.0], [110.0, 4.0], [118.0, 18.0],
+      ]],
+    },
+  },
+  {
+    id: 'sundaland',
+    name: 'Sundaland',
+    nameZh: '巽他古陆 (婆罗洲与马来群岛雨林)',
+    threatLevel: 'Critical',
+    areaKm2: 1500000,
+    speciesRichness: 25000,
+    endemicSpecies: 15000,
+    keyReserves: ['古农列尤择国家公园', '京那巴鲁公园', '丹绒普丁国家公园'],
+    description: '涵盖苏门答腊、爪哇、婆罗洲和马来半岛，红毛猩猩、苏门答腊犀、大王花的栖息地，正面临油棕种植与森林退化威胁。',
+    polygon: {
+      type: 'Polygon',
+      coordinates: [[
+        [95.0, 6.0], [104.0, 6.0], [118.0, 6.5], [119.0, -4.0],
+        [114.0, -8.5], [105.0, -7.0], [96.0, -2.0], [95.0, 6.0],
+      ]],
+    },
+  },
+];
+
+
