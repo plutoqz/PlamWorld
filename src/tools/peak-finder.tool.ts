@@ -13,7 +13,8 @@ export interface PeakInfo {
   lng: number;
   elevation: number; // m
   distance: number;   // km
-  bearing: number;    // deg from view point
+  bearing: number;    // deg from view point (0-360)
+  pitchAngle?: number; // deg 仰角 (-90 to +90, 考虑地球曲率)
   visible: boolean;
   source?: 'catalog' | 'dem' | 'osm';
 }
@@ -30,15 +31,16 @@ export class PeakFinderTool implements MapTool {
   private ctx: ToolContext | null = null;
   private _viewPoint: LngLat | null = null;
   private _observerHeight = 2;   // m
+  private _observerElevation = 0; // 地表海拔 (m)
   private _searchRadius = 100;    // km
   private _peaks: PeakInfo[] = [];
   private _searching = false;
   private searchController: AbortController | null = null;
   private onStateChange: (() => void) | null = null;
 
-  // Built-in sample peaks (China + world famous, ~50 peaks)
-  // Full OSM natural=peak download would be ~450K peaks, but we use a curated set
+  // 内置精选全球与中国著名山峰数据库 (~65 peaks)
   private static SAMPLE_PEAKS: Omit<PeakInfo, 'distance' | 'bearing' | 'visible'>[] = [
+    // 喜马拉雅 & 喀喇昆仑 8000m+ 巨峰
     { name: '珠穆朗玛峰', lat: 27.9881, lng: 86.9250, elevation: 8848 },
     { name: 'K2 (乔戈里峰)', lat: 35.8825, lng: 76.5133, elevation: 8611 },
     { name: '干城章嘉峰', lat: 27.7025, lng: 88.1475, elevation: 8586 },
@@ -49,26 +51,69 @@ export class PeakFinderTool implements MapTool {
     { name: '马纳斯卢峰', lat: 28.5497, lng: 84.5597, elevation: 8163 },
     { name: '南迦帕尔巴特峰', lat: 35.2375, lng: 74.5892, elevation: 8126 },
     { name: '安纳普尔纳峰', lat: 28.5961, lng: 83.8203, elevation: 8091 },
+    { name: '加舒尔布鲁木I峰', lat: 35.7244, lng: 76.6961, elevation: 8080 },
+    { name: '布洛阿特峰', lat: 35.8117, lng: 76.5650, elevation: 8051 },
+    { name: '加舒尔布鲁木II峰', lat: 35.7583, lng: 76.6533, elevation: 8034 },
+    { name: '希夏邦马峰', lat: 28.3522, lng: 85.7797, elevation: 8027 },
+
+    // 西南 & 横断山脉 & 青藏高原
+    { name: '南迦巴瓦峰', lat: 29.6294, lng: 95.0558, elevation: 7782 },
     { name: '贡嘎山', lat: 29.5958, lng: 101.8792, elevation: 7556 },
-    { name: '慕士塔格峰', lat: 38.2758, lng: 75.1131, elevation: 7546 },
+    { name: '梅里雪山 (卡瓦格博)', lat: 28.4358, lng: 98.6833, elevation: 6740 },
+    { name: '冈仁波齐', lat: 31.0667, lng: 81.3125, elevation: 6656 },
+    { name: '四姑娘山 (幺妹峰)', lat: 31.1075, lng: 102.9031, elevation: 6250 },
+    { name: '雀儿山', lat: 31.7833, lng: 99.1167, elevation: 6168 },
+    { name: '仙乃日 (稻城亚丁)', lat: 28.4011, lng: 100.3475, elevation: 6032 },
+    { name: '央迈勇 (稻城亚丁)', lat: 28.3683, lng: 100.3542, elevation: 5958 },
+    { name: '夏诺多吉 (稻城亚丁)', lat: 28.3975, lng: 100.4147, elevation: 5958 },
+    { name: '玉龙雪山 (扇子陡)', lat: 27.0989, lng: 100.1772, elevation: 5596 },
+    { name: '哈巴雪山', lat: 27.3236, lng: 100.1086, elevation: 5396 },
+
+    // 西北天山 & 帕米尔 & 昆仑 & 祁连 & 贺兰
     { name: '公格尔峰', lat: 38.5933, lng: 75.3153, elevation: 7649 },
-    { name: '勃朗峰', lat: 45.8325, lng: 6.8644, elevation: 4808 },
-    { name: '马特洪峰', lat: 45.9764, lng: 7.6583, elevation: 4478 },
+    { name: '慕士塔格峰', lat: 38.2758, lng: 75.1131, elevation: 7546 },
+    { name: '托木尔峰 (天山)', lat: 42.0369, lng: 80.1294, elevation: 7439 },
+    { name: '昆仑山玉珠峰', lat: 35.6517, lng: 94.2517, elevation: 6178 },
+    { name: '博格达峰 (天山)', lat: 43.7992, lng: 88.3325, elevation: 5445 },
+    { name: '祁连山冷龙岭', lat: 37.6667, lng: 101.9167, elevation: 4872 },
+    { name: '贺兰山主峰', lat: 38.8958, lng: 105.9083, elevation: 3556 },
+
+    // 中国五岳 & 著名人文风景名山
+    { name: '泰山 (玉皇顶)', lat: 36.2564, lng: 117.1058, elevation: 1545 },
+    { name: '华山 (南峰)', lat: 34.4814, lng: 110.0889, elevation: 2154 },
+    { name: '衡山 (祝融峰)', lat: 27.2550, lng: 112.7217, elevation: 1300 },
+    { name: '恒山 (天峰岭)', lat: 39.6728, lng: 113.7367, elevation: 2017 },
+    { name: '嵩山 (连天峰)', lat: 34.4847, lng: 112.9547, elevation: 1512 },
+    { name: '黄山 (莲花峰)', lat: 30.1250, lng: 118.1667, elevation: 1864 },
+    { name: '峨眉山 (金顶)', lat: 29.5250, lng: 103.3325, elevation: 3079 },
+    { name: '庐山 (汉阳峰)', lat: 29.5447, lng: 115.9861, elevation: 1474 },
+    { name: '武夷山 (黄岗山)', lat: 27.8869, lng: 117.7831, elevation: 2160 },
+    { name: '五台山 (叶斗峰)', lat: 39.0167, lng: 113.5833, elevation: 3061 },
+    { name: '九华山 (十王峰)', lat: 30.4833, lng: 117.8000, elevation: 1342 },
+    { name: '普陀山 (佛顶山)', lat: 29.9833, lng: 122.3833, elevation: 286 },
+    { name: '梵净山 (凤凰山)', lat: 27.9167, lng: 108.6833, elevation: 2572 },
+    { name: '长白山 (白云峰)', lat: 42.0078, lng: 128.0558, elevation: 2691 },
+    { name: '雁荡山 (百岗尖)', lat: 28.3667, lng: 121.0500, elevation: 1108 },
+    { name: '台湾玉山', lat: 23.4700, lng: 120.9573, elevation: 3952 },
+    { name: '台湾雪山', lat: 24.3833, lng: 121.2333, elevation: 3886 },
+    { name: '海南五指山', lat: 18.8953, lng: 109.6978, elevation: 1867 },
+
+    // 世界七大洲与国际名峰
+    { name: '勃朗峰 (阿尔卑斯)', lat: 45.8325, lng: 6.8644, elevation: 4808 },
+    { name: '少女峰 (阿尔卑斯)', lat: 46.5369, lng: 7.9625, elevation: 4158 },
+    { name: '马特洪峰 (阿尔卑斯)', lat: 45.9764, lng: 7.6583, elevation: 4478 },
     { name: '富士山', lat: 35.3606, lng: 138.7274, elevation: 3776 },
-    { name: '乞力马扎罗山', lat: -3.0674, lng: 37.3556, elevation: 5895 },
-    { name: '阿空加瓜山', lat: -32.6531, lng: -70.0117, elevation: 6961 },
-    { name: '麦金利山', lat: 63.0692, lng: -151.0070, elevation: 6190 },
-    { name: '厄尔布鲁士山', lat: 43.3550, lng: 42.4392, elevation: 5642 },
-    { name: '文森峰', lat: -78.5252, lng: -85.6171, elevation: 4892 },
-    { name: '查亚峰', lat: -4.0789, lng: 137.1583, elevation: 4884 },
-    { name: '玉山', lat: 23.4700, lng: 120.9573, elevation: 3952 },
-    { name: '峨眉山', lat: 29.5250, lng: 103.3325, elevation: 3099 },
-    { name: '黄山', lat: 30.1250, lng: 118.1667, elevation: 1864 },
-    { name: '泰山', lat: 36.2564, lng: 117.1058, elevation: 1545 },
-    { name: '华山', lat: 34.4814, lng: 110.0889, elevation: 2154 },
-    { name: '衡山', lat: 27.2550, lng: 112.7217, elevation: 1300 },
-    { name: '恒山', lat: 39.6728, lng: 113.7367, elevation: 2017 },
-    { name: '嵩山', lat: 34.4847, lng: 112.9547, elevation: 1512 },
+    { name: '阿空加瓜山 (南美)', lat: -32.6531, lng: -70.0117, elevation: 6961 },
+    { name: '菲茨罗伊峰 (巴塔哥尼亚)', lat: -49.2714, lng: -73.0431, elevation: 3405 },
+    { name: '托雷峰 (巴塔哥尼亚)', lat: -49.2933, lng: -73.0983, elevation: 3128 },
+    { name: '乞力马扎罗山 (非洲)', lat: -3.0674, lng: 37.3556, elevation: 5895 },
+    { name: '肯尼亚山', lat: -0.1522, lng: 37.3083, elevation: 5199 },
+    { name: '麦金利山 (迪纳利, 北美)', lat: 63.0692, lng: -151.0070, elevation: 6190 },
+    { name: '雷尼尔山 (北美)', lat: 46.8529, lng: -121.7604, elevation: 4392 },
+    { name: '厄尔布鲁士山 (欧洲)', lat: 43.3550, lng: 42.4392, elevation: 5642 },
+    { name: '库克山 (新西兰)', lat: -43.5950, lng: 170.1417, elevation: 3724 },
+    { name: '查亚峰 (大洋洲)', lat: -4.0789, lng: 137.1583, elevation: 4884 },
+    { name: '文森峰 (南极)', lat: -78.5252, lng: -85.6171, elevation: 4892 },
   ];
 
   // ---- callbacks ----
@@ -85,6 +130,7 @@ export class PeakFinderTool implements MapTool {
 
   get viewPoint(): LngLat | null { return this._viewPoint ? [...this._viewPoint] as LngLat : null; }
   get observerHeight(): number { return this._observerHeight; }
+  get observerElevation(): number { return this._observerElevation; }
   get searchRadius(): number { return this._searchRadius; }
   get peaks(): PeakInfo[] { return this._peaks; }
   get searching(): boolean { return this._searching; }
@@ -148,6 +194,7 @@ export class PeakFinderTool implements MapTool {
       }
       if (controller.signal.aborted) return;
 
+      this._observerElevation = Math.round(observerGroundEle);
       const totalObsHeight = observerGroundEle + Math.max(1, this._observerHeight);
 
       // 2. 尝试从 Overpass API 获取真实自然山峰
@@ -237,28 +284,23 @@ export class PeakFinderTool implements MapTool {
 
           if (controller.signal.aborted) return;
 
-          // 计算距离、方位角与可见性
-          osmPeaks = rawPeakList.map((p) => {
-            const distKm = haversine(vpLat, vpLng, p.lat, p.lng);
-            const bearing = computeBearing(vpLat, vpLng, p.lat, p.lng);
-            const ele = p.ele ?? 300;
+          // 计算距离、方位角，并通过沿途真实地形剖面做 Line-of-Sight (LOS) 视线遮挡通视分析
+          const rawCandidates = rawPeakList.map((p) => ({
+            name: p.name,
+            lat: p.lat,
+            lng: p.lng,
+            elevation: p.ele ?? 300,
+            distance: haversine(vpLat, vpLng, p.lat, p.lng),
+            bearing: computeBearing(vpLat, vpLng, p.lat, p.lng),
+            source: 'osm' as const,
+          }));
 
-            // 地球曲率视距公式 (km): 3.86 * (sqrt(h1) + sqrt(h2))
-            const maxSightDistKm =
-              3.86 * (Math.sqrt(totalObsHeight) + Math.sqrt(Math.max(0, ele)));
-            const visible = distKm <= maxSightDistKm;
-
-            return {
-              name: p.name,
-              lat: p.lat,
-              lng: p.lng,
-              elevation: ele,
-              distance: distKm,
-              bearing,
-              visible,
-              source: 'osm' as const,
-            };
-          });
+          osmPeaks = await this.evaluatePeaksVisibility(
+            viewPoint,
+            totalObsHeight,
+            rawCandidates,
+            controller.signal,
+          );
 
           if (osmPeaks.length > 0) break;
         } catch {
@@ -269,7 +311,7 @@ export class PeakFinderTool implements MapTool {
       if (controller.signal.aborted) return;
 
       if (osmPeaks.length > 0) {
-        // 排序：可见山峰优先，其次按距离由近及远
+        // 排序：真实可见山峰优先，其次按距离由近及远
         osmPeaks.sort((a, b) => {
           if (a.visible !== b.visible) return a.visible ? -1 : 1;
           return a.distance - b.distance;
@@ -279,26 +321,26 @@ export class PeakFinderTool implements MapTool {
       }
 
       // 3. Overpass 无结果或离线：回退到内置名山库
-      const catalogResults: PeakInfo[] = [];
-      for (const p of PeakFinderTool.SAMPLE_PEAKS) {
+      const catalogCandidates = PeakFinderTool.SAMPLE_PEAKS.flatMap((p) => {
         const distKm = haversine(vpLat, vpLng, p.lat, p.lng);
-        if (distKm > this._searchRadius) continue;
+        if (distKm > this._searchRadius) return [];
 
         const bearing = computeBearing(vpLat, vpLng, p.lat, p.lng);
-        const maxSightDistKm =
-          3.86 * (Math.sqrt(totalObsHeight) + Math.sqrt(Math.max(0, p.elevation)));
-        const visible = distKm <= maxSightDistKm;
-
-        catalogResults.push({
+        return [{
           ...p,
           distance: distKm,
           bearing,
-          visible,
-          source: 'catalog',
-        });
-      }
+          source: 'catalog' as const,
+        }];
+      });
 
-      if (catalogResults.length > 0) {
+      if (catalogCandidates.length > 0) {
+        const catalogResults = await this.evaluatePeaksVisibility(
+          viewPoint,
+          totalObsHeight,
+          catalogCandidates,
+          controller.signal,
+        );
         catalogResults.sort((a, b) => {
           if (a.visible !== b.visible) return a.visible ? -1 : 1;
           return a.distance - b.distance;
@@ -320,6 +362,119 @@ export class PeakFinderTool implements MapTool {
         this.notify();
       }
     }
+  }
+
+  /**
+   * 基于沿途真实地形剖面 (LOS) 的视线遮挡通视判定
+   * 综合考虑地球曲率与沿途地形山脊遮挡，而非单纯几何地平线距离
+   */
+  private async evaluatePeaksVisibility(
+    viewPoint: LngLat,
+    totalObsHeight: number,
+    candidatePeaks: {
+      name: string;
+      lat: number;
+      lng: number;
+      elevation: number;
+      distance: number;
+      bearing: number;
+      source?: 'catalog' | 'osm' | 'dem';
+    }[],
+    signal: AbortSignal,
+  ): Promise<PeakInfo[]> {
+    const R = 6_371_000;
+    const SAMPLES_PER_PEAK = 5;
+    const sampleFractions = [0.15, 0.3, 0.5, 0.7, 0.85];
+
+    // 1. 初步几何地球曲率视距与有效仰角快速初筛
+    const initialList = candidatePeaks.map((p) => {
+      const distM = p.distance * 1000;
+      const curvatureDropM = (distM * distM) / (2 * R);
+      const effectivePeakElev = p.elevation - curvatureDropM;
+      const deltaH = effectivePeakElev - totalObsHeight;
+      const pitchAngle = Number(((Math.atan2(deltaH, distM) * 180) / Math.PI).toFixed(2));
+
+      const maxSightKm =
+        3.86 * (Math.sqrt(totalObsHeight) + Math.sqrt(Math.max(0, p.elevation)));
+      const geometricallyPossible = p.distance <= maxSightKm;
+      return {
+        ...p,
+        pitchAngle,
+        geometricallyPossible,
+        visible: geometricallyPossible,
+      };
+    });
+
+    // 筛选出几何上在地平线以上、且有一定距离需要做地形遮挡分析的山峰
+    const needLosCheck = initialList.filter(
+      (p) => p.geometricallyPossible && p.distance >= 1.5,
+    );
+    if (needLosCheck.length === 0) {
+      return initialList.map(({ geometricallyPossible: _, ...rest }) => rest);
+    }
+
+    // 2. 收集所有中间剖面采样点（单次批量向 DEM 请求）
+    const allSamplePoints: LngLat[] = [];
+    const peakSampleRanges: { peakIdx: number; startIdx: number; count: number }[] = [];
+
+    for (let i = 0; i < needLosCheck.length; i++) {
+      const p = needLosCheck[i]!;
+      const startIdx = allSamplePoints.length;
+      for (const f of sampleFractions) {
+        allSamplePoints.push([
+          viewPoint[0] + (p.lng - viewPoint[0]) * f,
+          viewPoint[1] + (p.lat - viewPoint[1]) * f,
+        ]);
+      }
+      peakSampleRanges.push({ peakIdx: i, startIdx, count: SAMPLES_PER_PEAK });
+    }
+
+    let sampleElevations: (number | null)[] = [];
+    try {
+      sampleElevations = await queryElevations(allSamplePoints, {
+        signal,
+        resolutionMeters: 90,
+      });
+    } catch {
+      // 若 DEM 查询超时或离线，平滑降级到几何可见性
+      return initialList.map(({ geometricallyPossible: _, ...rest }) => rest);
+    }
+
+    if (signal.aborted) return [];
+
+    // 3. 逐个山峰做视线仰角遮挡计算
+    peakSampleRanges.forEach(({ peakIdx, startIdx, count }) => {
+      const p = needLosCheck[peakIdx]!;
+      const distM = p.distance * 1000;
+      // 目标山峰在考虑地球曲率后的有效仰角
+      const peakCurvatureDropM = (distM * distM) / (2 * R);
+      const peakEffectiveElev = p.elevation - peakCurvatureDropM;
+      const peakAngle = Math.atan2(peakEffectiveElev - totalObsHeight, distM);
+
+      let isObstructed = false;
+      for (let s = 0; s < count; s++) {
+        const ele = sampleElevations[startIdx + s];
+        if (ele === null || ele === undefined || !Number.isFinite(ele)) continue;
+
+        const frac = sampleFractions[s]!;
+        const sampleDistM = distM * frac;
+        const sampleCurvatureDropM = (sampleDistM * sampleDistM) / (2 * R);
+        const sampleEffectiveElev = ele - sampleCurvatureDropM;
+        const sampleAngle = Math.atan2(sampleEffectiveElev - totalObsHeight, sampleDistM);
+
+        // 如果途中某个山脊或地形的视线仰角超过了目标山峰的视线仰角，则发生遮挡
+        if (sampleAngle > peakAngle + 1e-5) {
+          isObstructed = true;
+          break;
+        }
+      }
+
+      if (isObstructed) {
+        p.visible = false;
+      }
+    });
+
+    return initialList.map(({ geometricallyPossible: _, ...rest }) => rest);
   }
 
   private async findHighestPoint(
@@ -370,14 +525,19 @@ export class PeakFinderTool implements MapTool {
       });
       if (highestIndex >= 0) {
         const coordinate = points[highestIndex]!;
+        const distKm = haversine(viewPoint[1], viewPoint[0], coordinate[1], coordinate[0]);
+        const distM = distKm * 1000;
+        const dropM = (distM * distM) / (2 * 6_371_000);
+        const pitchAngle = Number(((Math.atan2(highestElevation - dropM - (this._observerElevation + this._observerHeight), distM) * 180) / Math.PI).toFixed(2));
         this._peaks = [
           {
             name: '当前区域最高点',
             lng: coordinate[0],
             lat: coordinate[1],
             elevation: highestElevation,
-            distance: haversine(viewPoint[1], viewPoint[0], coordinate[1], coordinate[0]),
+            distance: distKm,
             bearing: computeBearing(viewPoint[1], viewPoint[0], coordinate[1], coordinate[0]),
+            pitchAngle,
             visible: true,
             source: 'dem',
           },
@@ -409,6 +569,7 @@ export class PeakFinderTool implements MapTool {
     this.ctx = null;
     this._viewPoint = null;
     this._peaks = [];
+    this._observerElevation = 0;
   }
 
   isActive(): boolean {
