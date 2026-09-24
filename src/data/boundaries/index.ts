@@ -3,16 +3,19 @@
 
 import type { Feature, FeatureCollection, Polygon, MultiPolygon } from 'geojson';
 import countries110m from './countries-110m.json';
+import chinaProvinces from './china-provinces.json';
 
 export interface CountryFeature {
   name: string;
   nameZh: string;
   iso: string;
   continent: string;
+  type?: 'country' | 'province';
   feature: Feature<Polygon | MultiPolygon>;
 }
 
 let _cache: CountryFeature[] | null = null;
+let _provinceCache: CountryFeature[] | null = null;
 
 interface NaturalEarthProperties {
   NAME_EN?: string;
@@ -20,6 +23,16 @@ interface NaturalEarthProperties {
   ADM0_A3?: string;
   ISO_N3?: string;
   CONTINENT?: string;
+}
+
+interface ChinaProvinceProperties {
+  adcode?: string;
+  name?: string;
+  nameZh?: string;
+  nameEn?: string;
+  short?: string;
+  capital?: string;
+  level?: string;
 }
 
 /** 获取国家列表（同步，Natural Earth 数据已打包进应用） */
@@ -40,6 +53,7 @@ export function getCountries(): CountryFeature[] {
       nameZh,
       iso: properties?.ADM0_A3?.trim() || name,
       continent: properties?.CONTINENT?.trim() || '',
+      type: 'country' as const,
       feature: {
         ...feature,
         properties: { name, nameZh },
@@ -48,7 +62,7 @@ export function getCountries(): CountryFeature[] {
   });
 
   if (naturalEarthCountries.length > 0) {
-    _cache = naturalEarthCountries.sort((a, b) => a.nameZh.localeCompare(b.nameZh));
+    _cache = naturalEarthCountries.sort((a, b) => a.nameZh.localeCompare(b.nameZh, 'zh-Hans-CN'));
     return _cache;
   }
 
@@ -58,6 +72,7 @@ export function getCountries(): CountryFeature[] {
     nameZh: c.nameZh,
     iso: c.iso,
     continent: c.continent,
+    type: 'country' as const,
     feature: {
       type: 'Feature',
       properties: { name: c.name, nameZh: c.nameZh },
@@ -70,14 +85,62 @@ export function getCountries(): CountryFeature[] {
   return _cache;
 }
 
-/** 按名称搜索（支持中英文） */
-export function searchCountries(query: string): CountryFeature[] {
-  const q = query.toLowerCase();
-  return getCountries().filter(
-    (c) =>
-      c.name.toLowerCase().includes(q) ||
-      c.nameZh.includes(query),
+/** 获取中国省级行政区列表 */
+export function getProvinces(): CountryFeature[] {
+  if (_provinceCache) return _provinceCache;
+
+  const collection = chinaProvinces as unknown as FeatureCollection<Polygon | MultiPolygon>;
+  _provinceCache = collection.features.map((feature) => {
+    const properties = feature.properties as ChinaProvinceProperties | null;
+    const name = properties?.nameEn?.trim() || properties?.name?.trim() || '';
+    const nameZh = properties?.nameZh?.trim() || properties?.name?.trim() || '';
+    const iso = properties?.adcode || properties?.short || name;
+    return {
+      name,
+      nameZh,
+      iso,
+      continent: '中国省份',
+      type: 'province' as const,
+      feature: {
+        ...feature,
+        properties: { name, nameZh, level: 'province' },
+      },
+    } satisfies CountryFeature;
+  }).sort((a, b) => a.nameZh.localeCompare(b.nameZh, 'zh-Hans-CN'));
+
+  return _provinceCache;
+}
+
+/** 获取所有区域（国家 + 中国省份） */
+export function getAllRegions(): CountryFeature[] {
+  return [...getCountries(), ...getProvinces()];
+}
+
+/** 按名称搜索（支持中英文、缩写、省份/国家过滤） */
+export function searchRegions(
+  query: string,
+  category: 'all' | 'country' | 'province' = 'all',
+): CountryFeature[] {
+  const q = query.trim().toLowerCase();
+  const baseList =
+    category === 'province'
+      ? getProvinces()
+      : category === 'country'
+        ? getCountries()
+        : getAllRegions();
+
+  if (!q) return baseList;
+
+  return baseList.filter((c) =>
+    c.name.toLowerCase().includes(q) ||
+    c.nameZh.toLowerCase().includes(q) ||
+    c.iso.toLowerCase().includes(q)
   );
+}
+
+/** 按名称搜索国家（向下兼容） */
+export function searchCountries(query: string): CountryFeature[] {
+  return searchRegions(query, 'country');
 }
 
 // ---- 数据 ----

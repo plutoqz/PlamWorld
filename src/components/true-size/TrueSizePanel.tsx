@@ -1,28 +1,44 @@
 // components/true-size/TrueSizePanel.tsx — 真实大小比较面板
 //
-// UI：两个区域选择器 + 幽灵图层 + 面积对比卡片
+// UI：两个区域选择器 + 幽灵图层 + 面积对比卡片 + 墨卡托失真分析 + 智能拖拽与预设跳转
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import * as maplibregl from 'maplibre-gl';
 import type { Feature, MultiPolygon, Polygon } from 'geojson';
 import type { TrueSizeTool } from '../../tools/true-size.tool';
 import type { CountryFeature } from '../../data/boundaries';
-import { getCountries, searchCountries } from '../../data/boundaries';
-import { reprojectFeature, featureLatCenter, mercatorScale } from '../../core/projection';
+import { searchRegions } from '../../data/boundaries';
+import {
+  reprojectFeature,
+  featureLatCenter,
+  mercatorScale,
+  calculateGeodesicAreaKm2,
+  formatGeodesicArea,
+  pointInFeature,
+} from '../../core/projection';
 import { MapSketchOverlay } from '../../engines/maplibre/sketch-overlay';
 import type { SketchStyle } from '../../engines/maplibre/sketch-overlay';
 import type { LngLat } from '../../core/types';
 
 // ---- constants ----
 const REGION_A_STYLE: SketchStyle = {
-  strokeColor: '#4fc3f7', strokeWidth: 3, fillColor: '#4fc3f7', fillOpacity: 0.18,
+  strokeColor: '#4fc3f7',
+  strokeWidth: 3,
+  fillColor: '#4fc3f7',
+  fillOpacity: 0.18,
 };
 const REGION_B_STYLE: SketchStyle = {
-  strokeColor: '#ffb74d', strokeWidth: 3, fillColor: '#ffb74d', fillOpacity: 0.22,
+  strokeColor: '#ffb74d',
+  strokeWidth: 3,
+  fillColor: '#ffb74d',
+  fillOpacity: 0.22,
 };
 const GHOST_STYLE: SketchStyle = {
-  strokeColor: '#4fc3f7', strokeWidth: 4, strokeDash: '10 6',
-  fillColor: '#4fc3f7', fillOpacity: 0.32,
+  strokeColor: '#4fc3f7',
+  strokeWidth: 3.5,
+  strokeDash: '8 5',
+  fillColor: '#4fc3f7',
+  fillOpacity: 0.32,
 };
 
 interface ShapeOverlays {
@@ -30,8 +46,6 @@ interface ShapeOverlays {
   regionB: MapSketchOverlay[];
   ghost: MapSketchOverlay[];
 }
-
-// ---- component ----
 
 interface TrueSizePanelProps {
   tool: TrueSizeTool;
@@ -42,23 +56,28 @@ export function TrueSizePanel({ tool }: TrueSizePanelProps) {
   const [queryB, setQueryB] = useState('');
   const [regionA, setRegionA] = useState<CountryFeature | null>(null);
   const [regionB, setRegionB] = useState<CountryFeature | null>(null);
+  const [tabA, setTabA] = useState<'all' | 'country' | 'province'>('all');
+  const [tabB, setTabB] = useState<'all' | 'country' | 'province'>('all');
   const [dragging, setDragging] = useState(false);
   const [dragPos, setDragPos] = useState<[number, number] | null>(null);
 
   const mapRef = useRef<maplibregl.Map | null>(null);
   const ghostCenterRef = useRef<[number, number] | null>(null);
+  const ghostFeatureRef = useRef<Feature<Polygon | MultiPolygon> | null>(null);
   const overlaysRef = useRef<ShapeOverlays>({ regionA: [], regionB: [], ghost: [] });
+  const handleMarkerRef = useRef<maplibregl.Marker | null>(null);
+  const draggingRef = useRef(false);
+  const hoveringGhostRef = useRef(false);
+  const dragOffsetRef = useRef<[number, number]>([0, 0]);
 
-  // ---- 搜索建议 ----
+  // ---- 搜索建议（国家 + 省份） ----
   const suggestionsA = useMemo(() => {
-    if (!queryA || queryA.length < 1) return getCountries().slice(0, 15);
-    return searchCountries(queryA).slice(0, 8);
-  }, [queryA]);
+    return searchRegions(queryA, tabA).slice(0, 10);
+  }, [queryA, tabA]);
 
   const suggestionsB = useMemo(() => {
-    if (!queryB || queryB.length < 1) return getCountries().slice(0, 15);
-    return searchCountries(queryB).slice(0, 8);
-  }, [queryB]);
+    return searchRegions(queryB, tabB).slice(0, 10);
+  }, [queryB, tabB]);
 
   // ---- 初始化引擎 ----
   useEffect(() => {
@@ -75,8 +94,27 @@ export function TrueSizePanel({ tool }: TrueSizePanelProps) {
     return () => {
       tool.setOnStateChange(null);
       cleanupOverlays(overlaysRef.current);
+      if (handleMarkerRef.current) {
+        handleMarkerRef.current.remove();
+        handleMarkerRef.current = null;
+      }
+      map.getCanvas().style.cursor = '';
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ---- 移动幽灵多边形与手柄辅助 ----
+  const moveGhostTo = useCallback((map: maplibregl.Map, center: [number, number]) => {
+    if (!regionA) return;
+    ghostCenterRef.current = center;
+    const ghost = renderGhost(map, regionA, center, overlaysRef.current.ghost);
+    ghostFeatureRef.current = ghost;
+    tool.setGhostCenter(center);
+    setDragPos(center);
+
+    if (handleMarkerRef.current) {
+      handleMarkerRef.current.setLngLat(center);
+    }
+  }, [regionA, tool]);
 
   // ---- 选择区域 ----
   const selectA = useCallback((c: CountryFeature) => {
@@ -88,17 +126,16 @@ export function TrueSizePanel({ tool }: TrueSizePanelProps) {
 
     if (regionB) {
       const targetCenter = featureLatCenter(regionB.feature).center;
-      ghostCenterRef.current = targetCenter;
-      tool.setGhostCenter(targetCenter);
+      moveGhostTo(map, targetCenter);
       clearOverlays(overlaysRef.current.regionA);
-      const ghost = renderGhost(map, c, targetCenter, overlaysRef.current.ghost);
-      fitFeatures(map, [regionB.feature, ghost]);
+      fitFeatures(map, [regionB.feature, ghostFeatureRef.current!]);
     } else {
       renderOutline(map, c, overlaysRef.current.regionA, REGION_A_STYLE);
-      const ghost = renderGhost(map, c, tool.ghostCenter, overlaysRef.current.ghost);
-      fitFeatures(map, [c.feature, ghost]);
+      const center = featureLatCenter(c.feature).center;
+      moveGhostTo(map, center);
+      fitFeatures(map, [c.feature, ghostFeatureRef.current!]);
     }
-  }, [regionB, tool]);
+  }, [moveGhostTo, regionB, tool]);
 
   const selectB = useCallback((c: CountryFeature) => {
     setRegionB(c);
@@ -109,15 +146,13 @@ export function TrueSizePanel({ tool }: TrueSizePanelProps) {
     renderOutline(map, c, overlaysRef.current.regionB, REGION_B_STYLE);
     if (regionA) {
       const targetCenter = featureLatCenter(c.feature).center;
-      ghostCenterRef.current = targetCenter;
-      tool.setGhostCenter(targetCenter);
+      moveGhostTo(map, targetCenter);
       clearOverlays(overlaysRef.current.regionA);
-      const ghost = renderGhost(map, regionA, targetCenter, overlaysRef.current.ghost);
-      fitFeatures(map, [c.feature, ghost]);
+      fitFeatures(map, [c.feature, ghostFeatureRef.current!]);
     } else {
       fitFeatures(map, [c.feature]);
     }
-  }, [regionA, tool]);
+  }, [moveGhostTo, regionA, tool]);
 
   const commitQueryA = useCallback(() => {
     const match = pickCountry(queryA, suggestionsA);
@@ -138,6 +173,12 @@ export function TrueSizePanel({ tool }: TrueSizePanelProps) {
     if (map) {
       clearOverlays(overlaysRef.current.regionA);
       clearOverlays(overlaysRef.current.ghost);
+      ghostFeatureRef.current = null;
+      ghostCenterRef.current = null;
+      if (handleMarkerRef.current) {
+        handleMarkerRef.current.remove();
+        handleMarkerRef.current = null;
+      }
       if (regionB) fitFeatures(map, [regionB.feature]);
     }
   }, [regionA, regionB, tool]);
@@ -152,235 +193,558 @@ export function TrueSizePanel({ tool }: TrueSizePanelProps) {
       clearOverlays(overlaysRef.current.regionB);
       if (regionA) {
         const center = featureLatCenter(regionA.feature).center;
-        ghostCenterRef.current = center;
-        tool.setGhostCenter(center);
         renderOutline(map, regionA, overlaysRef.current.regionA, REGION_A_STYLE);
-        const ghost = renderGhost(map, regionA, center, overlaysRef.current.ghost);
-        fitFeatures(map, [regionA.feature, ghost]);
+        moveGhostTo(map, center);
+        fitFeatures(map, [regionA.feature, ghostFeatureRef.current!]);
       }
     }
-  }, [regionA, regionB, tool]);
+  }, [moveGhostTo, regionA, regionB, tool]);
 
-  // ---- 幽灵拖动 ----
+  // ---- 幽灵拖拽手柄 Marker ----
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !regionA) return;
-
-    if (dragging) {
-      map.getCanvas().style.cursor = 'grabbing';
-    } else {
-      map.getCanvas().style.cursor = '';
-      if (dragPos) {
-        // 松手 → 固定位置
-        ghostCenterRef.current = dragPos;
-        renderGhost(map, regionA, dragPos, overlaysRef.current.ghost);
-        tool.setGhostCenter(dragPos);
+    if (!map || !regionA) {
+      if (handleMarkerRef.current) {
+        handleMarkerRef.current.remove();
+        handleMarkerRef.current = null;
       }
+      return;
     }
-  }, [dragging, dragPos, regionA]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleMapMouseMove = useCallback((e: maplibregl.MapMouseEvent) => {
-    if (!dragging || !regionA) return;
-    const pos: [number, number] = [e.lngLat.lng, e.lngLat.lat];
-    setDragPos(pos);
-    renderGhost(mapRef.current!, regionA, pos, overlaysRef.current.ghost);
-  }, [dragging, regionA]);
+    const currentCenter = ghostCenterRef.current ?? featureLatCenter(regionA.feature).center;
 
-  const handleMapMouseDown = useCallback((e: maplibregl.MapMouseEvent) => {
-    if (!regionA) return;
-    // 判断点击点是否在幽灵附近（简单容差）
-    e.preventDefault?.();
-    setDragging(true);
-    setDragPos([e.lngLat.lng, e.lngLat.lat]);
-    mapRef.current!.getCanvas().style.cursor = 'grabbing';
+    if (!handleMarkerRef.current) {
+      const el = document.createElement('div');
+      el.style.cssText = `
+        display: inline-flex; align-items: center; gap: 4px;
+        background: rgba(10, 20, 35, 0.92);
+        border: 1.5px solid #4fc3f7;
+        color: #e0f7fa;
+        padding: 3px 8px;
+        border-radius: 12px;
+        font: 600 11px system-ui, -apple-system, sans-serif;
+        box-shadow: 0 0 12px rgba(79, 195, 247, 0.45), 0 3px 8px rgba(0,0,0,0.6);
+        cursor: grab;
+        user-select: none;
+        white-space: nowrap;
+        pointer-events: auto;
+      `;
+      el.innerHTML = '<span style="color:#4fc3f7;font-size:12px;">✥</span><span>拖拽幽灵</span>';
+
+      el.addEventListener('mousedown', (ev) => {
+        ev.stopPropagation();
+        ev.preventDefault();
+        if (!mapRef.current || !regionA) return;
+        mapRef.current.dragPan.disable();
+        draggingRef.current = true;
+        hoveringGhostRef.current = true;
+        setDragging(true);
+        mapRef.current.getCanvas().style.cursor = 'grabbing';
+        dragOffsetRef.current = [0, 0];
+      });
+
+      const marker = new maplibregl.Marker({ element: el, anchor: 'center' })
+        .setLngLat(currentCenter)
+        .addTo(map);
+      handleMarkerRef.current = marker;
+    } else {
+      handleMarkerRef.current.setLngLat(currentCenter);
+    }
   }, [regionA]);
 
-  const handleMapMouseUp = useCallback(() => {
-    setDragging(false);
-  }, []);
+  // ---- 鼠标交互事件处理 (修复全图拖拽劫持缺陷) ----
+  const handleMapMouseMove = useCallback((e: maplibregl.MapMouseEvent) => {
+    const map = mapRef.current;
+    if (!map || !regionA) return;
 
-  // 注册地图拖拽事件
+    if (draggingRef.current) {
+      // 正在拖拽幽灵
+      const newLng = e.lngLat.lng + dragOffsetRef.current[0];
+      const newLat = Math.max(-82, Math.min(82, e.lngLat.lat + dragOffsetRef.current[1]));
+      moveGhostTo(map, [newLng, newLat]);
+      return;
+    }
+
+    // 未拖拽状态：仅做精确 Hit Test
+    let isHit = false;
+    if (ghostCenterRef.current) {
+      // 1. 手柄距离测试
+      const centerPt = map.project(ghostCenterRef.current);
+      const pxDist = Math.hypot(e.point.x - centerPt.x, e.point.y - centerPt.y);
+      if (pxDist <= 28) isHit = true;
+    }
+
+    if (!isHit && ghostFeatureRef.current) {
+      // 2. 射线法多边形几何检测
+      isHit = pointInFeature([e.lngLat.lng, e.lngLat.lat], ghostFeatureRef.current);
+    }
+
+    hoveringGhostRef.current = isHit;
+    map.getCanvas().style.cursor = isHit ? 'grab' : '';
+  }, [moveGhostTo, regionA]);
+
+  const handleMapMouseDown = useCallback((e: maplibregl.MapMouseEvent) => {
+    const map = mapRef.current;
+    if (!map || !regionA) return;
+
+    // 关键修复：未点击幽灵图层时直接放行，绝不阻断地图正常平移/缩放！
+    if (!hoveringGhostRef.current) return;
+
+    e.preventDefault?.();
+    map.dragPan.disable();
+    draggingRef.current = true;
+    setDragging(true);
+    map.getCanvas().style.cursor = 'grabbing';
+
+    const currentCenter = ghostCenterRef.current ?? [e.lngLat.lng, e.lngLat.lat];
+    // 记录抓取偏移量，避免中心突变瞬移
+    dragOffsetRef.current = [currentCenter[0] - e.lngLat.lng, currentCenter[1] - e.lngLat.lat];
+  }, [regionA]);
+
+  const handleMapMouseUp = useCallback((e: maplibregl.MapMouseEvent) => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    if (draggingRef.current) {
+      draggingRef.current = false;
+      setDragging(false);
+      map.dragPan.enable();
+
+      if (regionA && ghostCenterRef.current) {
+        tool.setGhostCenter(ghostCenterRef.current);
+      }
+
+      let isHit = false;
+      if (ghostCenterRef.current) {
+        const centerPt = map.project(ghostCenterRef.current);
+        const pxDist = Math.hypot(e.point.x - centerPt.x, e.point.y - centerPt.y);
+        if (pxDist <= 28) isHit = true;
+      }
+      if (!isHit && ghostFeatureRef.current) {
+        isHit = pointInFeature([e.lngLat.lng, e.lngLat.lat], ghostFeatureRef.current);
+      }
+      hoveringGhostRef.current = isHit;
+      map.getCanvas().style.cursor = isHit ? 'grab' : '';
+    }
+  }, [regionA, tool]);
+
+  // 注册地图事件监听
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !regionA) return;
 
-    if (regionA) {
-      map.on('mousemove', handleMapMouseMove);
-      map.on('mousedown', handleMapMouseDown);
-      map.on('mouseup', handleMapMouseUp);
+    map.on('mousemove', handleMapMouseMove);
+    map.on('mousedown', handleMapMouseDown);
+    map.on('mouseup', handleMapMouseUp);
 
-      // 初始渲染幽灵
-      renderGhost(map, regionA, tool.ghostCenter, overlaysRef.current.ghost);
+    return () => {
+      map.off('mousemove', handleMapMouseMove);
+      map.off('mousedown', handleMapMouseDown);
+      map.off('mouseup', handleMapMouseUp);
+      map.dragPan.enable();
+      map.getCanvas().style.cursor = '';
+    };
+  }, [handleMapMouseDown, handleMapMouseMove, handleMapMouseUp, regionA]);
 
-      return () => {
-        map.off('mousemove', handleMapMouseMove);
-        map.off('mousedown', handleMapMouseDown);
-        map.off('mouseup', handleMapMouseUp);
-        clearOverlays(overlaysRef.current.ghost);
-      };
+  // 快捷跳转预设
+  const jumpToPreset = useCallback((preset: 'refB' | 'equator' | 'highLat' | 'reset') => {
+    const map = mapRef.current;
+    if (!map || !regionA) return;
+
+    let targetCenter: [number, number];
+    const nativeCenter = featureLatCenter(regionA.feature).center;
+
+    if (preset === 'refB' && regionB) {
+      targetCenter = featureLatCenter(regionB.feature).center;
+    } else if (preset === 'equator') {
+      const curLng = ghostCenterRef.current ? ghostCenterRef.current[0] : nativeCenter[0];
+      targetCenter = [curLng, 0];
+    } else if (preset === 'highLat') {
+      const curLng = ghostCenterRef.current ? ghostCenterRef.current[0] : nativeCenter[0];
+      targetCenter = [curLng, 65];
+    } else {
+      targetCenter = nativeCenter;
     }
-  }, [regionA]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ---- 面积比较 ----
+    moveGhostTo(map, targetCenter);
+
+    if (regionB) {
+      fitFeatures(map, [regionB.feature, ghostFeatureRef.current!]);
+    } else {
+      fitFeatures(map, [regionA.feature, ghostFeatureRef.current!]);
+    }
+  }, [moveGhostTo, regionA, regionB]);
+
+  // 计算真实测地面积 (km²)
+  const areaA = useMemo(() => {
+    if (!regionA) return null;
+    return calculateGeodesicAreaKm2(regionA.feature);
+  }, [regionA]);
+
+  const areaB = useMemo(() => {
+    if (!regionB) return null;
+    return calculateGeodesicAreaKm2(regionB.feature);
+  }, [regionB]);
+
+  // ---- 面积与投影比较 ----
   const compare = useMemo(() => {
-    if (!regionA || !regionB) return null;
+    if (!regionA) return null;
 
     const { lat: latA } = featureLatCenter(regionA.feature);
-    const { lat: latB } = featureLatCenter(regionB.feature);
-    const scale = mercatorScale(latA, latB);
+    const cosA = Math.cos((latA * Math.PI) / 180);
+    const mercatorDistortionA = (1 / (cosA * cosA)).toFixed(2);
 
-    // 用幽灵中心纬度做缩放校正
     const ghostLat = ghostCenterRef.current?.[1] ?? latA;
     const ghostScale = mercatorScale(latA, ghostLat);
+
+    if (!regionB) {
+      return {
+        latA: latA.toFixed(1),
+        latB: null,
+        areaAFormatted: areaA !== null ? formatGeodesicArea(areaA) : '-',
+        areaBFormatted: null,
+        ratioPercent: null,
+        mercatorDistortionA,
+        mercatorDistortionB: null,
+        scaleAtoB: null,
+        ghostScale: ghostScale.toFixed(3),
+        ghostLat: ghostLat.toFixed(1),
+      };
+    }
+
+    const { lat: latB } = featureLatCenter(regionB.feature);
+    const cosB = Math.cos((latB * Math.PI) / 180);
+    const mercatorDistortionB = (1 / (cosB * cosB)).toFixed(2);
+    const scale = mercatorScale(latA, latB);
+
+    const areaKm2A = areaA ?? 0;
+    const areaKm2B = areaB ?? 0;
+    const ratioPercent = areaKm2B > 0 ? ((areaKm2A / areaKm2B) * 100).toFixed(1) : null;
 
     return {
       latA: latA.toFixed(1),
       latB: latB.toFixed(1),
-      mercatorDistortion: (1 / (Math.cos((latA * Math.PI) / 180) ** 2) - 1).toFixed(1),
+      areaAFormatted: formatGeodesicArea(areaKm2A),
+      areaBFormatted: formatGeodesicArea(areaKm2B),
+      ratioPercent,
+      mercatorDistortionA,
+      mercatorDistortionB,
       scaleAtoB: scale.toFixed(3),
       ghostScale: ghostScale.toFixed(3),
       ghostLat: ghostLat.toFixed(1),
     };
-  }, [regionA, regionB, dragging]);
+  }, [regionA, regionB, areaA, areaB, dragging, dragPos]);
 
   return (
     <div style={{
       position: 'absolute', bottom: 36, left: '50%', transform: 'translateX(-50%)',
-      zIndex: 2000, width: 420, maxWidth: '95vw',
-      background: 'rgba(10,10,20,0.9)', backdropFilter: 'blur(16px)',
-      borderRadius: 12, border: '1px solid rgba(255,255,255,0.08)',
+      zIndex: 2000, width: 440, maxWidth: '95vw',
+      background: 'rgba(10,12,22,0.92)', backdropFilter: 'blur(16px)',
+      borderRadius: 12, border: '1px solid rgba(255,255,255,0.1)',
       padding: '16px 20px',
-      display: 'flex', flexDirection: 'column', gap: 8,
+      display: 'flex', flexDirection: 'column', gap: 10,
+      boxShadow: '0 8px 32px rgba(0,0,0,0.6)',
     }}>
       {/* 标题 */}
-      <div style={{ fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.8)' }}>
-        📐 真实大小比较
+      <div style={{
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+        borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: 6,
+      }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.9)', display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span>📐</span> <span>真实大小比较 (True Size)</span>
+        </div>
+        <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.4)' }}>
+          支持全球国家 & 中国省份
+        </div>
       </div>
 
       {/* 区域 A 选择 */}
       <div style={{ position: 'relative' }}>
-        <label style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', display: 'block', marginBottom: 4 }}>
-          区域 A（幽灵，拖动地图移动）
-        </label>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+          <label style={{ fontSize: 11, color: '#4fc3f7', fontWeight: 500 }}>
+            区域 A（幽灵，可拖动跨纬度对比）
+          </label>
+          <div style={{ display: 'flex', gap: 4 }}>
+            {(['all', 'country', 'province'] as const).map((t) => (
+              <button
+                key={t}
+                type="button"
+                onClick={() => setTabA(t)}
+                style={{
+                  fontSize: 10, padding: '1px 6px', borderRadius: 4, border: 'none',
+                  background: tabA === t ? '#4fc3f7' : 'rgba(255,255,255,0.06)',
+                  color: tabA === t ? '#000' : 'rgba(255,255,255,0.6)',
+                  cursor: 'pointer', fontWeight: tabA === t ? 600 : 400,
+                }}
+              >
+                {t === 'all' ? '全部' : t === 'country' ? '国家' : '省份'}
+              </button>
+            ))}
+          </div>
+        </div>
         <input
           value={queryA}
           onChange={(e) => changeQueryA(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter') commitQueryA();
           }}
-          placeholder="搜索国家..."
+          placeholder="搜索国家或中国省份（如: 新疆, 日本, 德国...）"
           style={{
             width: '100%', boxSizing: 'border-box',
-            background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
+            background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)',
             borderRadius: 6, color: '#fff', padding: '6px 10px', fontSize: 12,
+            outline: 'none',
           }}
         />
         {queryA && !regionA && (
           <div style={{
-            position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 10,
-            background: 'rgba(10,10,20,0.95)', borderRadius: 8,
-            border: '1px solid rgba(255,255,255,0.1)',
-            maxHeight: 160, overflow: 'auto',
+            position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 30,
+            background: 'rgba(12,16,28,0.96)', borderRadius: 8,
+            border: '1px solid rgba(255,255,255,0.15)',
+            maxHeight: 180, overflow: 'auto', marginTop: 3,
+            boxShadow: '0 8px 24px rgba(0,0,0,0.7)',
           }}>
             {suggestionsA.map((c) => (
               <div
                 key={c.iso}
                 onClick={() => selectA(c)}
                 style={{
-                  padding: '5px 10px', cursor: 'pointer', fontSize: 12,
-                  color: 'rgba(255,255,255,0.7)',
-                  borderBottom: '1px solid rgba(255,255,255,0.04)',
+                  padding: '6px 10px', cursor: 'pointer', fontSize: 12,
+                  color: 'rgba(255,255,255,0.85)',
+                  borderBottom: '1px solid rgba(255,255,255,0.05)',
+                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                 }}
-                onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,0.08)')}
+                onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(79,195,247,0.12)')}
                 onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
               >
-                {c.nameZh} <span style={{ color: 'rgba(255,255,255,0.3)', fontSize: 10 }}>{c.name}</span>
+                <div>
+                  <span style={{ fontWeight: 500 }}>{c.nameZh}</span>{' '}
+                  <span style={{ color: 'rgba(255,255,255,0.4)', fontSize: 10 }}>{c.name}</span>
+                </div>
+                <span style={{
+                  fontSize: 9, padding: '1px 5px', borderRadius: 3,
+                  background: c.type === 'province' ? 'rgba(239,83,80,0.2)' : 'rgba(79,195,247,0.2)',
+                  color: c.type === 'province' ? '#ef5350' : '#4fc3f7',
+                }}>
+                  {c.type === 'province' ? '🇨🇳 省份' : '🌐 国家'}
+                </span>
               </div>
             ))}
           </div>
         )}
         {regionA && (
-          <div style={{ fontSize: 11, color: '#4fc3f7', marginTop: 2 }}>
-            ✅ 已选：{regionA.nameZh || regionA.name}
+          <div style={{ fontSize: 11, color: '#4fc3f7', marginTop: 3 }}>
+            ✅ 已选：{regionA.nameZh || regionA.name} ({regionA.type === 'province' ? '中国省份' : '国家'})
           </div>
         )}
       </div>
 
       {/* 区域 B 选择 */}
       <div style={{ position: 'relative' }}>
-        <label style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', display: 'block', marginBottom: 4 }}>
-          区域 B（参考，固定在地图上）
-        </label>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+          <label style={{ fontSize: 11, color: '#ffb74d', fontWeight: 500 }}>
+            区域 B（参考，固定在地图上）
+          </label>
+          <div style={{ display: 'flex', gap: 4 }}>
+            {(['all', 'country', 'province'] as const).map((t) => (
+              <button
+                key={t}
+                type="button"
+                onClick={() => setTabB(t)}
+                style={{
+                  fontSize: 10, padding: '1px 6px', borderRadius: 4, border: 'none',
+                  background: tabB === t ? '#ffb74d' : 'rgba(255,255,255,0.06)',
+                  color: tabB === t ? '#000' : 'rgba(255,255,255,0.6)',
+                  cursor: 'pointer', fontWeight: tabB === t ? 600 : 400,
+                }}
+              >
+                {t === 'all' ? '全部' : t === 'country' ? '国家' : '省份'}
+              </button>
+            ))}
+          </div>
+        </div>
         <input
           value={queryB}
           onChange={(e) => changeQueryB(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter') commitQueryB();
           }}
-          placeholder="搜索国家..."
+          placeholder="搜索国家或中国省份..."
           style={{
             width: '100%', boxSizing: 'border-box',
-            background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
+            background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)',
             borderRadius: 6, color: '#fff', padding: '6px 10px', fontSize: 12,
+            outline: 'none',
           }}
         />
         {queryB && !regionB && (
           <div style={{
-            position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 10,
-            background: 'rgba(10,10,20,0.95)', borderRadius: 8,
-            border: '1px solid rgba(255,255,255,0.1)',
-            maxHeight: 160, overflow: 'auto',
+            position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 30,
+            background: 'rgba(12,16,28,0.96)', borderRadius: 8,
+            border: '1px solid rgba(255,255,255,0.15)',
+            maxHeight: 180, overflow: 'auto', marginTop: 3,
+            boxShadow: '0 8px 24px rgba(0,0,0,0.7)',
           }}>
             {suggestionsB.map((c) => (
               <div
                 key={c.iso}
                 onClick={() => selectB(c)}
                 style={{
-                  padding: '5px 10px', cursor: 'pointer', fontSize: 12,
-                  color: 'rgba(255,255,255,0.7)',
-                  borderBottom: '1px solid rgba(255,255,255,0.04)',
+                  padding: '6px 10px', cursor: 'pointer', fontSize: 12,
+                  color: 'rgba(255,255,255,0.85)',
+                  borderBottom: '1px solid rgba(255,255,255,0.05)',
+                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                 }}
-                onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,0.08)')}
+                onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,183,77,0.12)')}
                 onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
               >
-                {c.nameZh} <span style={{ color: 'rgba(255,255,255,0.3)', fontSize: 10 }}>{c.name}</span>
+                <div>
+                  <span style={{ fontWeight: 500 }}>{c.nameZh}</span>{' '}
+                  <span style={{ color: 'rgba(255,255,255,0.4)', fontSize: 10 }}>{c.name}</span>
+                </div>
+                <span style={{
+                  fontSize: 9, padding: '1px 5px', borderRadius: 3,
+                  background: c.type === 'province' ? 'rgba(239,83,80,0.2)' : 'rgba(255,183,77,0.2)',
+                  color: c.type === 'province' ? '#ef5350' : '#ffb74d',
+                }}>
+                  {c.type === 'province' ? '🇨🇳 省份' : '🌐 国家'}
+                </span>
               </div>
             ))}
           </div>
         )}
         {regionB && (
-          <div style={{ fontSize: 11, color: '#ffb74d', marginTop: 2 }}>
-            ✅ 已选：{regionB.nameZh || regionB.name}
+          <div style={{ fontSize: 11, color: '#ffb74d', marginTop: 3 }}>
+            ✅ 已选：{regionB.nameZh || regionB.name} ({regionB.type === 'province' ? '中国省份' : '国家'})
           </div>
         )}
       </div>
 
-      {/* 拖拽提示 */}
+      {/* 快捷跳转与操作提示 */}
       {regionA && (
         <div style={{
-          fontSize: 11, color: dragging ? '#81c784' : 'rgba(255,255,255,0.4)',
-          textAlign: 'center',
-          padding: '4px 0', borderTop: '1px solid rgba(255,255,255,0.05)',
+          display: 'flex', flexDirection: 'column', gap: 6,
+          background: 'rgba(255,255,255,0.03)', borderRadius: 8, padding: '8px 10px',
+          border: '1px solid rgba(255,255,255,0.06)',
         }}>
-          {dragging
-            ? '🖐 拖动幽灵图层到目标纬度...松手固定'
-            : '🖱 在地图上点击并拖动幽灵图层'}
+          <div style={{
+            fontSize: 10, color: dragging ? '#81c784' : 'rgba(255,255,255,0.5)',
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          }}>
+            <span>
+              {dragging
+                ? '🖐 正在拖拽幽灵图层...松手固定'
+                : '💡 鼠标放至幽灵图层或手柄上直接拖拽；地图其他区域可自由平移'}
+            </span>
+          </div>
+
+          {/* 预设跳转按钮组 */}
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {regionB && (
+              <button
+                type="button"
+                onClick={() => jumpToPreset('refB')}
+                style={{
+                  fontSize: 10, padding: '3px 8px', borderRadius: 4,
+                  background: 'rgba(255,183,77,0.18)', border: '1px solid rgba(255,183,77,0.3)',
+                  color: '#ffb74d', cursor: 'pointer',
+                }}
+              >
+                🎯 对齐参考区域
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => jumpToPreset('equator')}
+              style={{
+                fontSize: 10, padding: '3px 8px', borderRadius: 4,
+                background: 'rgba(79,195,247,0.15)', border: '1px solid rgba(79,195,247,0.25)',
+                color: '#4fc3f7', cursor: 'pointer',
+              }}
+            >
+              🌐 移至赤道 (0°)
+            </button>
+            <button
+              type="button"
+              onClick={() => jumpToPreset('highLat')}
+              style={{
+                fontSize: 10, padding: '3px 8px', borderRadius: 4,
+                background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.15)',
+                color: '#fff', cursor: 'pointer',
+              }}
+            >
+              ❄️ 移至高纬度 (65°N)
+            </button>
+            <button
+              type="button"
+              onClick={() => jumpToPreset('reset')}
+              style={{
+                fontSize: 10, padding: '3px 8px', borderRadius: 4,
+                background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)',
+                color: 'rgba(255,255,255,0.7)', cursor: 'pointer',
+              }}
+            >
+              ↩️ 恢复原位
+            </button>
+          </div>
         </div>
       )}
 
       {/* 对比信息 */}
       {compare && (
         <div style={{
-          display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px 12px',
-          fontSize: 11, color: 'rgba(255,255,255,0.6)',
+          display: 'flex', flexDirection: 'column', gap: 6,
           borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: 8,
+          fontSize: 11,
         }}>
-          <span>{regionA!.nameZh} 纬度</span><b style={{ color: '#4fc3f7' }}>{compare.latA}°</b>
-          <span>{regionB!.nameZh} 纬度</span><b style={{ color: '#ffb74d' }}>{compare.latB}°</b>
-          <span>Mercator 失真</span><b style={{ color: '#ef5350' }}>~{compare.mercatorDistortion}x</b>
-          <span>缩放因子 (A→B)</span><b style={{ color: '#fff' }}>{compare.scaleAtoB}x</b>
-          <span>当前幽灵纬度</span><b style={{ color: '#81c784' }}>{compare.ghostLat}°</b>
-          <span>当前缩放</span><b style={{ color: '#81c784' }}>{compare.ghostScale}x</b>
+          {/* 真实测地面积 */}
+          <div style={{
+            display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px 12px',
+            background: 'rgba(255,255,255,0.04)', borderRadius: 6, padding: '6px 8px',
+          }}>
+            <div>
+              <span style={{ color: 'rgba(255,255,255,0.5)' }}>{regionA!.nameZh} 真实面积</span>
+              <div style={{ color: '#4fc3f7', fontWeight: 600, fontSize: 12 }}>
+                {compare.areaAFormatted}
+              </div>
+            </div>
+            {regionB && (
+              <div>
+                <span style={{ color: 'rgba(255,255,255,0.5)' }}>{regionB.nameZh} 真实面积</span>
+                <div style={{ color: '#ffb74d', fontWeight: 600, fontSize: 12 }}>
+                  {compare.areaBFormatted}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* 面积相对比率 */}
+          {regionB && compare.ratioPercent && (
+            <div style={{
+              background: 'rgba(79, 195, 247, 0.08)', border: '1px solid rgba(79, 195, 247, 0.2)',
+              borderRadius: 6, padding: '5px 8px', color: '#e0f7fa', fontSize: 11,
+            }}>
+              📊 真实占比：<b>{regionA!.nameZh}</b> 仅相当于 <b>{regionB.nameZh}</b> 的{' '}
+              <b style={{ color: '#4fc3f7' }}>{compare.ratioPercent}%</b>
+            </div>
+          )}
+
+          {/* 维度与墨卡托失真 */}
+          <div style={{
+            display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '3px 12px',
+            color: 'rgba(255,255,255,0.6)', fontSize: 10,
+          }}>
+            <span>{regionA!.nameZh} 原生纬度</span>
+            <b style={{ color: '#4fc3f7' }}>{compare.latA}° (墨卡托膨胀 ~{compare.mercatorDistortionA}x)</b>
+            {regionB && compare.latB && (
+              <>
+                <span>{regionB.nameZh} 中心纬度</span>
+                <b style={{ color: '#ffb74d' }}>{compare.latB}° (墨卡托膨胀 ~{compare.mercatorDistortionB}x)</b>
+              </>
+            )}
+            <span>幽灵图层当前纬度</span>
+            <b style={{ color: '#81c784' }}>{compare.ghostLat}° (缩放因子 {compare.ghostScale}x)</b>
+          </div>
         </div>
       )}
 
@@ -456,8 +820,10 @@ function cleanupOverlays(overlays: ShapeOverlays): void {
 function pickCountry(query: string, suggestions: readonly CountryFeature[]): CountryFeature | null {
   const normalized = query.trim().toLocaleLowerCase();
   if (!normalized) return null;
-  return suggestions.find((country) =>
-    country.name.toLocaleLowerCase() === normalized || country.nameZh === query.trim()
+  return suggestions.find((c) =>
+    c.name.toLocaleLowerCase() === normalized ||
+    c.nameZh === query.trim() ||
+    c.nameZh.includes(query.trim())
   ) ?? suggestions[0] ?? null;
 }
 
@@ -472,7 +838,7 @@ function fitFeatures(
   if (bounds.isEmpty()) return;
 
   map.fitBounds(bounds, {
-    padding: { top: 72, right: 64, bottom: 190, left: 280 },
+    padding: { top: 72, right: 64, bottom: 220, left: 280 },
     maxZoom: 5,
     duration: 700,
   });

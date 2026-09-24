@@ -159,6 +159,71 @@ export function featureLatCenter(feature: Feature<Polygon | MultiPolygon>): {
 // ---- 批量工具 ----
 
 /**
+ * 计算单个闭合经纬度环在地球球体上的真实大地测地面积 (m²)
+ * 基于球面梯形积分算法（Spherical Trapezoid Integration）
+ */
+function ringGeodesicAreaM2(ring: Position[]): number {
+  if (ring.length < 3) return 0;
+  let total = 0;
+  const rad = Math.PI / 180;
+  const n = ring.length;
+
+  for (let i = 0; i < n; i++) {
+    const p1 = ring[i]!;
+    const p2 = ring[(i + 1) % n]!;
+    const lambda1 = p1[0] * rad;
+    const lambda2 = p2[0] * rad;
+    const phi1 = p1[1] * rad;
+    const phi2 = p2[1] * rad;
+
+    let dLambda = lambda2 - lambda1;
+    // 跨越 180° 经线时的环绕校正
+    if (dLambda > Math.PI) dLambda -= 2 * Math.PI;
+    if (dLambda < -Math.PI) dLambda += 2 * Math.PI;
+
+    total += dLambda * (2 + Math.sin(phi1) + Math.sin(phi2));
+  }
+
+  return Math.abs((total * R * R) / 2);
+}
+
+/**
+ * 计算 GeoJSON 多边形/多多边形在地球球面上的真实物理面积 (km²)
+ */
+export function calculateGeodesicAreaKm2(feature: Feature<Polygon | MultiPolygon>): number {
+  let areaM2 = 0;
+  const geom = feature.geometry;
+
+  if (geom.type === 'Polygon') {
+    if (geom.coordinates.length > 0) {
+      areaM2 += ringGeodesicAreaM2(geom.coordinates[0]!);
+      for (let j = 1; j < geom.coordinates.length; j++) {
+        areaM2 -= ringGeodesicAreaM2(geom.coordinates[j]!);
+      }
+    }
+  } else if (geom.type === 'MultiPolygon') {
+    for (const poly of geom.coordinates) {
+      if (poly.length > 0) {
+        areaM2 += ringGeodesicAreaM2(poly[0]!);
+        for (let j = 1; j < poly.length; j++) {
+          areaM2 -= ringGeodesicAreaM2(poly[j]!);
+        }
+      }
+    }
+  }
+
+  return Math.max(0, areaM2 / 1_000_000);
+}
+
+/** 格式化输出真实大地面积 */
+export function formatGeodesicArea(areaKm2: number): string {
+  if (areaKm2 >= 100_000) {
+    return `${(areaKm2 / 10_000).toFixed(1)} 万 km²`;
+  }
+  return `${Math.round(areaKm2).toLocaleString()} km²`;
+}
+
+/**
  * 对 FeatureCollection 中的每个 Feature 重投影
  */
 export function reprojectCollection(
@@ -182,3 +247,86 @@ export function reprojectCollection(
     }),
   };
 }
+
+/** 射线法检测经纬度点是否在闭合环内 */
+export function pointInRing(point: [number, number], ring: Position[]): boolean {
+  const [x, y] = point;
+  let inside = false;
+  const n = ring.length;
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const xi = ring[i]![0];
+    const yi = ring[i]![1];
+    const xj = ring[j]![0];
+    const yj = ring[j]![1];
+    const intersect = yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi;
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+/** 获取 Feature 的外包矩形 [minLng, minLat, maxLng, maxLat] */
+export function featureBBox(feature: Feature<Polygon | MultiPolygon>): [number, number, number, number] {
+  let minLng = Infinity;
+  let minLat = Infinity;
+  let maxLng = -Infinity;
+  let maxLat = -Infinity;
+
+  const check = (pos: Position) => {
+    if (pos[0] < minLng) minLng = pos[0];
+    if (pos[0] > maxLng) maxLng = pos[0];
+    if (pos[1] < minLat) minLat = pos[1];
+    if (pos[1] > maxLat) maxLat = pos[1];
+  };
+
+  const geom = feature.geometry;
+  if (geom.type === 'Polygon') {
+    for (const r of geom.coordinates) {
+      for (const p of r) check(p);
+    }
+  } else if (geom.type === 'MultiPolygon') {
+    for (const poly of geom.coordinates) {
+      for (const r of poly) {
+        for (const p of r) check(p);
+      }
+    }
+  }
+  return [minLng, minLat, maxLng, maxLat];
+}
+
+/** 检测经纬度点是否在 Polygon 或 MultiPolygon Feature 内部 */
+export function pointInFeature(point: [number, number], feature: Feature<Polygon | MultiPolygon>): boolean {
+  const bbox = featureBBox(feature);
+  const [lng, lat] = point;
+  // BBox 快速粗筛
+  if (lng < bbox[0] || lng > bbox[2] || lat < bbox[1] || lat > bbox[3]) {
+    return false;
+  }
+
+  const geom = feature.geometry;
+  if (geom.type === 'Polygon') {
+    if (!geom.coordinates.length) return false;
+    if (!pointInRing(point, geom.coordinates[0]!)) return false;
+    // 检查孔洞
+    for (let i = 1; i < geom.coordinates.length; i++) {
+      if (pointInRing(point, geom.coordinates[i]!)) return false;
+    }
+    return true;
+  } else if (geom.type === 'MultiPolygon') {
+    for (const poly of geom.coordinates) {
+      if (poly.length && pointInRing(point, poly[0]!)) {
+        let inHole = false;
+        for (let i = 1; i < poly.length; i++) {
+          if (pointInRing(point, poly[i]!)) {
+            inHole = true;
+            break;
+          }
+        }
+        if (!inHole) return true;
+      }
+    }
+    return false;
+  }
+  return false;
+}
+
+
