@@ -87,6 +87,10 @@ export class StoryMapTool implements MapTool {
 
     const center = engine.getCenter();
     const zoom = engine.getZoom();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const nativeMap = engine.getNative() as any;
+    const pitch = typeof nativeMap?.getPitch === 'function' ? nativeMap.getPitch() : 0;
+    const bearing = typeof nativeMap?.getBearing === 'function' ? nativeMap.getBearing() : 0;
 
     const chapter: StoryChapter = {
       id: `ch-${Date.now()}`,
@@ -94,8 +98,8 @@ export class StoryMapTool implements MapTool {
       description,
       center,
       zoom,
-      pitch: 0,
-      bearing: 0,
+      pitch,
+      bearing,
       transition: 'fly',
       duration: 3000,
     };
@@ -142,7 +146,11 @@ export class StoryMapTool implements MapTool {
     if (!ch) return;
 
     this._currentChapter = index;
-    engine.flyTo(ch.center, ch.zoom, { duration: ch.duration });
+    engine.flyTo(ch.center, ch.zoom, {
+      duration: ch.duration,
+      pitch: ch.pitch,
+      bearing: ch.bearing,
+    });
     this.notify();
   }
 
@@ -163,7 +171,11 @@ export class StoryMapTool implements MapTool {
       this.notify();
 
       await new Promise<void>((resolve) => {
-        engine!.flyTo(ch.center, ch.zoom, { duration: ch.duration });
+        engine!.flyTo(ch.center, ch.zoom, {
+          duration: ch.duration,
+          pitch: ch.pitch,
+          bearing: ch.bearing,
+        });
         setTimeout(resolve, ch.duration + 500);
       });
     }

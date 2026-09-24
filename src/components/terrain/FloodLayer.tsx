@@ -13,9 +13,11 @@ interface FloodLayerProps {
   tool: SeaLevelRiseTool;
 }
 
-const GRID_SIZE = 32;
+const GRID_SIZE = 48;
 const FLOOD_SOURCE_ID = 'palm-flood-src';
 const FLOOD_LAYER_ID = 'palm-flood-layer';
+
+export type FloodConnectivityMode = 'connected' | 'all';
 
 interface DEMCache {
   data: Float32Array;
@@ -26,9 +28,11 @@ interface DEMCache {
 
 export function FloodLayer({ tool }: FloodLayerProps) {
   const [waterLevel, setWaterLevel] = useState(tool.getWaterLevel());
+  const [connectivityMode, setConnectivityMode] = useState<FloodConnectivityMode>('connected');
   const [status, setStatus] = useState<'init' | 'sampling' | 'ready' | 'error'>('init');
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [stats, setStats] = useState<{ floodedPct: number; blockedDepressionCount: number } | null>(null);
   const cacheRef = useRef<DEMCache | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -43,10 +47,12 @@ export function FloodLayer({ tool }: FloodLayerProps) {
     // 注册引擎回调：滑块拖动时重绘
     tool.onRender((level: number) => {
       setWaterLevel(level);
-      renderFloodToMap(map, cacheRef.current, level);
+      const res = renderFloodToMap(map, cacheRef.current, level, connectivityMode);
+      if (res) setStats(res);
     });
     const handleStyleLoad = () => {
-      renderFloodToMap(map, cacheRef.current, tool.getWaterLevel());
+      const res = renderFloodToMap(map, cacheRef.current, tool.getWaterLevel(), connectivityMode);
+      if (res) setStats(res);
     };
     map.on('style.load', handleStyleLoad);
 
@@ -111,8 +117,8 @@ export function FloodLayer({ tool }: FloodLayerProps) {
       cacheRef.current = cache;
       setStatus('ready');
 
-      console.log(`[FloodLayer] 高程采样完成: ${validCount}/${GRID_SIZE * GRID_SIZE} 有效点`);
-      renderFloodToMap(map, cache, waterLevel);
+      const res = renderFloodToMap(map, cache, waterLevel, connectivityMode);
+      if (res) setStats(res);
     } catch (reason) {
       if (controller.signal.aborted) return;
       setError(reason instanceof Error ? reason.message : '未知错误');
@@ -127,8 +133,19 @@ export function FloodLayer({ tool }: FloodLayerProps) {
     const level = Number(e.target.value);
     setWaterLevel(level);
     tool.setWaterLevel(level);
-    renderFloodToMap(mapRef.current!, cacheRef.current, level);
-  }, [tool]);
+    if (mapRef.current) {
+      const res = renderFloodToMap(mapRef.current, cacheRef.current, level, connectivityMode);
+      if (res) setStats(res);
+    }
+  }, [tool, connectivityMode]);
+
+  const handleModeChange = (mode: FloodConnectivityMode) => {
+    setConnectivityMode(mode);
+    if (mapRef.current) {
+      const res = renderFloodToMap(mapRef.current, cacheRef.current, waterLevel, mode);
+      if (res) setStats(res);
+    }
+  };
 
   const handleRetry = () => {
     if (mapRef.current) startSampling(mapRef.current);
@@ -141,13 +158,38 @@ export function FloodLayer({ tool }: FloodLayerProps) {
           <small>模拟水位</small>
           <strong>+{waterLevel} m</strong>
         </div>
+        {stats && (
+          <div className="pw-metric-item">
+            <small>淹没覆盖率</small>
+            <strong>{stats.floodedPct.toFixed(1)}%</strong>
+          </div>
+        )}
+      </div>
+
+      <div className="pw-segmented" aria-label="水文连通模式">
+        <button
+          type="button"
+          className={connectivityMode === 'connected' ? 'is-active' : ''}
+          onClick={() => handleModeChange('connected')}
+          title="基于真实海岸线水流连通泛洪，山体阻挡后的内陆盆地不被淹没"
+        >
+          🌊 海洋水系连通
+        </button>
+        <button
+          type="button"
+          className={connectivityMode === 'all' ? 'is-active' : ''}
+          onClick={() => handleModeChange('all')}
+          title="全域低洼地势淹没（经典浴缸模型）"
+        >
+          🌐 低洼全域淹没
+        </button>
       </div>
 
       {status === 'sampling' && (
         <>
           <div className="pw-panel-status is-warning">
             <LoaderCircle size={14} />
-            <span>正在采集 {GRID_SIZE}×{GRID_SIZE} 高程格网 · {progress}%</span>
+            <span>正在采集 {GRID_SIZE}×{GRID_SIZE} 高精高程格网 · {progress}%</span>
           </div>
           <div className="pw-progress-track"><span style={{ width: `${progress}%` }} /></div>
         </>
@@ -175,7 +217,11 @@ export function FloodLayer({ tool }: FloodLayerProps) {
           </div>
           <div className="pw-panel-note">
             <Info size={14} />
-            <span>蓝色区域表示完全淹没范围，拖动滑块可实时更新。</span>
+            <span>
+              {connectivityMode === 'connected'
+                ? `真实水文连通模式：海水仅沿水系倒灌。${stats?.blockedDepressionCount ? `已排除 ${stats.blockedDepressionCount} 处被地形阻挡的封闭内陆盆地。` : ''}`
+                : '经典浴缸模式：所有海拔低于水位的洼地无条件被淹没。'}
+            </span>
           </div>
         </>
       )}
@@ -189,10 +235,11 @@ function renderFloodToMap(
   map: maplibregl.Map,
   cache: DEMCache | null,
   level: number,
-): void {
-  if (!cache) return;
+  connectivityMode: FloodConnectivityMode,
+): { floodedPct: number; blockedDepressionCount: number } | null {
+  if (!cache) return null;
 
-  const canvas = buildFloodCanvas(cache, level);
+  const { canvas, floodedCount, totalValid, blockedDepressionCount } = buildFloodCanvas(cache, level, connectivityMode);
   const [west, south, east, north] = cache.bounds;
   const imageUrl = canvas.toDataURL();
   const coordinates: maplibregl.Coordinates = [
@@ -202,28 +249,34 @@ function renderFloodToMap(
   const source = map.getSource(FLOOD_SOURCE_ID) as maplibregl.ImageSource | undefined;
   if (source) {
     source.updateImage({ url: imageUrl, coordinates });
-    return;
+  } else {
+    map.addSource(FLOOD_SOURCE_ID, {
+      type: 'image',
+      url: imageUrl,
+      coordinates,
+    });
+
+    map.addLayer({
+      id: FLOOD_LAYER_ID,
+      type: 'raster',
+      source: FLOOD_SOURCE_ID,
+      paint: {
+        'raster-opacity': 0.85,
+        'raster-fade-duration': 100,
+        'raster-resampling': 'linear',
+      },
+    });
   }
 
-  map.addSource(FLOOD_SOURCE_ID, {
-    type: 'image',
-    url: imageUrl,
-    coordinates,
-  });
-
-  map.addLayer({
-    id: FLOOD_LAYER_ID,
-    type: 'raster',
-    source: FLOOD_SOURCE_ID,
-    paint: {
-      'raster-opacity': 1,
-      'raster-fade-duration': 0,
-      'raster-resampling': 'nearest',
-    },
-  });
+  const floodedPct = totalValid > 0 ? (floodedCount / totalValid) * 100 : 0;
+  return { floodedPct, blockedDepressionCount };
 }
 
-function buildFloodCanvas(cache: DEMCache, level: number): HTMLCanvasElement {
+function buildFloodCanvas(
+  cache: DEMCache,
+  level: number,
+  connectivityMode: FloodConnectivityMode,
+): { canvas: HTMLCanvasElement; floodedCount: number; totalValid: number; blockedDepressionCount: number } {
   const { data, rows, cols } = cache;
   const canvas = document.createElement('canvas');
   canvas.width = cols;
@@ -231,19 +284,95 @@ function buildFloodCanvas(cache: DEMCache, level: number): HTMLCanvasElement {
   const ctx = canvas.getContext('2d')!;
   const imgData = ctx.createImageData(cols, rows);
 
+  let totalValid = 0;
+  let rawBelowCount = 0;
+  for (let i = 0; i < data.length; i++) {
+    if (data[i] !== -9999) {
+      totalValid++;
+      if (data[i]! < level) rawBelowCount++;
+    }
+  }
+
+  // 连通性分析：广度优先搜索 (BFS)
+  const isFlooded = new Uint8Array(rows * cols); // 0 or 1
+
+  if (connectivityMode === 'connected') {
+    const queue: number[] = []; // indices
+    // 1. 种子识别：边缘所有低于水位的海洋点/边缘水系
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const isBorder = (r === 0 || r === rows - 1 || c === 0 || c === cols - 1);
+        const idx = r * cols + c;
+        const el = data[idx]!;
+        if (el !== -9999 && isBorder && el < level) {
+          isFlooded[idx] = 1;
+          queue.push(idx);
+        }
+      }
+    }
+
+    // 若边界无水体，但内部有海平面以下或负海拔（如大洋内陆海），也将 <= 0 处的边缘聚类作为种子
+    if (queue.length === 0) {
+      for (let i = 0; i < data.length; i++) {
+        if (data[i] !== -9999 && data[i]! <= 0) {
+          isFlooded[i] = 1;
+          queue.push(i);
+        }
+      }
+    }
+
+    // 2. BFS 沿水流连通路径漫延
+    let head = 0;
+    while (head < queue.length) {
+      const curr = queue[head++]!;
+      const cr = Math.floor(curr / cols);
+      const cc = curr % cols;
+
+      const neighbors = [
+        [cr - 1, cc],
+        [cr + 1, cc],
+        [cr, cc - 1],
+        [cr, cc + 1],
+      ];
+
+      for (const [nr, nc] of neighbors) {
+        if (nr >= 0 && nr < rows && nc >= 0 && nc < cols) {
+          const nidx = nr * cols + nc;
+          if (!isFlooded[nidx] && data[nidx] !== -9999 && data[nidx]! < level) {
+            isFlooded[nidx] = 1;
+            queue.push(nidx);
+          }
+        }
+      }
+    }
+  } else {
+    // 浴缸全域模式
+    for (let i = 0; i < data.length; i++) {
+      if (data[i] !== -9999 && data[i]! < level) {
+        isFlooded[i] = 1;
+      }
+    }
+  }
+
+  let floodedCount = 0;
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
-      const el = data[r * cols + c];
-      const px = (r * cols + c) * 4;
-      if (el !== -9999 && el < level) {
+      const idx = r * cols + c;
+      const px = idx * 4;
+      if (isFlooded[idx]) {
+        floodedCount++;
+        const depth = Math.max(0, level - data[idx]!);
+        // 根据淹没深度微调水深质感
+        const alpha = Math.min(240, Math.max(160, Math.round(160 + depth * 1.5)));
         imgData.data[px] = 18;
         imgData.data[px + 1] = 112;
-        imgData.data[px + 2] = 214;
-        imgData.data[px + 3] = 255;
+        imgData.data[px + 2] = 224;
+        imgData.data[px + 3] = alpha;
       }
     }
   }
 
   ctx.putImageData(imgData, 0, 0);
-  return canvas;
+  const blockedDepressionCount = Math.max(0, rawBelowCount - floodedCount);
+  return { canvas, floodedCount, totalValid, blockedDepressionCount };
 }

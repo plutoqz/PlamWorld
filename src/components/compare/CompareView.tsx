@@ -80,7 +80,9 @@ export function CompareView({ tool }: CompareViewProps) {
       if (mainMap) {
         const c = mainMap.getCenter();
         const z = mainMap.getZoom();
-        syncToRight(rightEngine, [c.lng, c.lat], z);
+        const p = mainMap.getPitch();
+        const b = mainMap.getBearing();
+        syncToRight(rightEngine, [c.lng, c.lat], z, p, b);
       }
     };
     rightEngine.on('load', onRightLoad);
@@ -91,7 +93,13 @@ export function CompareView({ tool }: CompareViewProps) {
       if (syncingRef.current || !mainMap) return;
       syncingRef.current = true;
       const c = mainMap.getCenter();
-      syncToRight(rightEngine, [c.lng, c.lat], mainMap.getZoom());
+      syncToRight(
+        rightEngine,
+        [c.lng, c.lat],
+        mainMap.getZoom(),
+        mainMap.getPitch(),
+        mainMap.getBearing(),
+      );
       syncingRef.current = false;
     };
     mainMap?.on('move', onMainMove);
@@ -103,8 +111,12 @@ export function CompareView({ tool }: CompareViewProps) {
       if (!rMap || !mainMap) return;
       syncingRef.current = true;
       const c = rMap.getCenter();
-      mainMap.setCenter([c.lng, c.lat]);
-      mainMap.setZoom(rMap.getZoom());
+      mainMap.jumpTo({
+        center: [c.lng, c.lat],
+        zoom: rMap.getZoom(),
+        pitch: rMap.getPitch(),
+        bearing: rMap.getBearing(),
+      });
       syncingRef.current = false;
     };
     rightEngine.on('move', onRightMove);
@@ -287,9 +299,15 @@ export function CompareView({ tool }: CompareViewProps) {
 
 // ---- helpers ----
 
-function syncToRight(rightEngine: MapLibreAdapter, center: [number, number], zoom: number): void {
+function syncToRight(
+  rightEngine: MapLibreAdapter,
+  center: [number, number],
+  zoom: number,
+  pitch = 0,
+  bearing = 0,
+): void {
   const rMap = rightEngine.getNative() as maplibregl.Map | null;
   if (!rMap) return;
-  // 用 jumpTo 避免动画堆积
-  rMap.jumpTo({ center, zoom });
+  // 用 jumpTo 避免动画堆积，全同步 3D 俯仰与航向
+  rMap.jumpTo({ center, zoom, pitch, bearing });
 }

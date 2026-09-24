@@ -22,6 +22,8 @@ export interface FlyToOptions {
   duration?: number; // ms
   curve?: number; // 飞行曲线
   essential?: boolean; // 是否忽略用户偏好
+  pitch?: number; // 俯仰角 (deg)
+  bearing?: number; // 航向角 (deg)
 }
 
 export interface FitBoundsOptions {

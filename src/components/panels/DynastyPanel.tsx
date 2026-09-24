@@ -29,7 +29,13 @@ export function DynastyPanel({ tool }: DynastyPanelProps) {
   const [hoverDynasty, setHoverDynasty] = useState<DynastyDef | null>(null);
 
   const mapRef = useRef<maplibregl.Map | null>(null);
+  const capitalMarkersRef = useRef<maplibregl.Marker[]>([]);
   const dynasties = tool.getAllDynasties();
+
+  const clearCapitalMarkers = () => {
+    capitalMarkersRef.current.forEach((m) => m.remove());
+    capitalMarkersRef.current = [];
+  };
 
   // sync
   useEffect(() => {
@@ -51,6 +57,7 @@ export function DynastyPanel({ tool }: DynastyPanelProps) {
     const map = engine.getNative() as maplibregl.Map;
     mapRef.current = map;
     return () => {
+      clearCapitalMarkers();
       cleanupAll(map);
     };
   }, []);
@@ -60,6 +67,7 @@ export function DynastyPanel({ tool }: DynastyPanelProps) {
     const map = mapRef.current;
     if (!map) return;
 
+    clearCapitalMarkers();
     cleanupAll(map);
 
     if (showAll) {
@@ -68,7 +76,33 @@ export function DynastyPanel({ tool }: DynastyPanelProps) {
       );
     } else if (activeId) {
       const d = tool.getActiveDynasty();
-      if (d) renderDynasty(map, d, opacity, DYN_SRC_PREFIX, DYN_LYR_PREFIX, DYN_LINE_LYR_PREFIX);
+      if (d) {
+        renderDynasty(map, d, opacity, DYN_SRC_PREFIX, DYN_LYR_PREFIX, DYN_LINE_LYR_PREFIX);
+
+        // 渲染历代都城与核心城邑标牌
+        d.capitals?.forEach((cap) => {
+          const el = document.createElement('div');
+          el.className = 'pw-capital-badge';
+          el.innerHTML = `
+            <div style="background: ${d.color}; color: #fff; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; border: 1.5px solid #fff; box-shadow: 0 2px 6px rgba(0,0,0,0.45); display: flex; align-items: center; gap: 3px; cursor: pointer; white-space: nowrap;">
+              <span>🏛️</span><span>${cap.nameZh}</span>
+              <span style="font-size: 9px; opacity: 0.85;">(${cap.role})</span>
+            </div>
+          `;
+          const popup = new maplibregl.Popup({ offset: 12 }).setHTML(`
+            <div style="color: #111; font-size: 12px; line-height: 1.4; padding: 2px;">
+              <strong style="color: ${d.color}; font-size: 13px;">${cap.nameZh} · ${cap.role}</strong>
+              <p style="margin: 4px 0 2px 0; color: #444;">${cap.note || ''}</p>
+              <div style="font-size: 10px; color: #777;">地理坐标: ${cap.coord[0]}°E, ${cap.coord[1]}°N</div>
+            </div>
+          `);
+          const marker = new maplibregl.Marker({ element: el })
+            .setLngLat(cap.coord)
+            .setPopup(popup)
+            .addTo(map);
+          capitalMarkersRef.current.push(marker);
+        });
+      }
 
       // 对比模式
       if (compareId) {
@@ -96,6 +130,12 @@ export function DynastyPanel({ tool }: DynastyPanelProps) {
         const lat = coords.reduce((s, c) => s + c[1], 0) / coords.length;
         mapRef.current.flyTo({ center: [lng, lat], zoom: 4, duration: 1500 });
       }
+    }
+  }
+
+  function handleFlyToCapital(coord: [number, number]) {
+    if (mapRef.current) {
+      mapRef.current.flyTo({ center: coord, zoom: 10, duration: 1200 });
     }
   }
 
@@ -170,25 +210,75 @@ export function DynastyPanel({ tool }: DynastyPanelProps) {
       )}
 
       {/* 主动朝代信息 */}
-      {activeId && tool.getActiveDynasty() && (
-        <div
-          style={{
-            padding: 8,
-            borderRadius: 4,
-            background: '#0d1217',
-            border: `1px solid ${tool.getActiveDynasty()!.color}88`,
-            fontSize: 12,
-          }}
-        >
-          <div style={{ fontWeight: 600, color: tool.getActiveDynasty()!.color }}>
-            {tool.getActiveDynasty()!.nameZh} ({tool.getActiveDynasty()!.yearRange[0]}–
-            {tool.getActiveDynasty()!.yearRange[1]})
+      {activeId && tool.getActiveDynasty() && (() => {
+        const ad = tool.getActiveDynasty()!;
+        return (
+          <div
+            style={{
+              padding: '10px 12px',
+              borderRadius: 6,
+              background: '#0d1217',
+              border: `1px solid ${ad.color}88`,
+              fontSize: 12,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 6,
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontWeight: 700, color: ad.color, fontSize: 13 }}>
+                {ad.nameZh} ({ad.yearRange[0] < 0 ? `前${-ad.yearRange[0]}` : ad.yearRange[0]} ~ {ad.yearRange[1] < 0 ? `前${-ad.yearRange[1]}` : ad.yearRange[1]}年)
+              </span>
+              <span style={{ fontSize: 10, color: 'var(--pw-text-faint)' }}>代表年份: {ad.year < 0 ? `前${-ad.year}` : ad.year}年</span>
+            </div>
+
+            {/* 都城列表 */}
+            {ad.capitals && ad.capitals.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 2 }}>
+                <span style={{ fontSize: 11, color: 'var(--pw-text-muted)', fontWeight: 600 }}>🏛️ 历代都城与核心城邑 (点击飞往):</span>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                  {ad.capitals.map((cap) => (
+                    <button
+                      key={cap.nameZh}
+                      type="button"
+                      onClick={() => handleFlyToCapital(cap.coord)}
+                      style={{
+                        padding: '3px 7px',
+                        fontSize: 11,
+                        background: 'rgba(255,255,255,0.06)',
+                        border: `1px solid ${ad.color}66`,
+                        borderRadius: 4,
+                        color: 'var(--pw-text)',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 4,
+                      }}
+                      title={cap.note || cap.role}
+                    >
+                      <span style={{ color: ad.color }}>●</span>
+                      <span>{cap.nameZh}</span>
+                      <small style={{ color: 'var(--pw-text-muted)', fontSize: 9 }}>{cap.role}</small>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* 极盛疆域概述 */}
+            {ad.extentDesc && (
+              <div style={{ fontSize: 11, color: 'var(--pw-text-muted)', lineHeight: 1.4, borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 4 }}>
+                <strong style={{ color: 'var(--pw-text)' }}>疆域范围: </strong>
+                {ad.extentDesc}
+              </div>
+            )}
+
+            <div style={{ fontSize: 11, color: 'var(--pw-text-muted)', lineHeight: 1.4 }}>
+              {ad.description}
+            </div>
           </div>
-          <div style={{ color: 'var(--pw-text-muted)', marginTop: 4 }}>
-            {tool.getActiveDynasty()!.description}
-          </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* 透明度 */}
       {activeId && (

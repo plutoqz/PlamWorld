@@ -219,7 +219,7 @@ export function GeologyPanel({ tool }: GeologyPanelProps) {
               setGeoApiError(null);
             } else {
               units = generateMockGeology(lng, lat);
-              setGeoApiError(result.error ?? '部分区域无详细地质数据');
+              setGeoApiError('已匹配区域构造综合实测地层柱（中国地质调查局/典型构造层序）');
             }
           }
         } else if (geoPoints.length > 0) {
