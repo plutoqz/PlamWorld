@@ -110,9 +110,9 @@ export function GeoGuessrPanel({ tool }: GeoGuessrPanelProps) {
 
       {phase === 'idle' && (
         <div className="pw-segmented" aria-label="地点类型">
-          {(['global', 'china', 'nature'] as const).map((category) => (
+          {(['global', 'china', 'europe', 'nature'] as const).map((category) => (
             <button type="button" key={category} onClick={() => { clearResultMap(); tool.startGame(category); }}>
-              {category === 'global' ? '全球' : category === 'china' ? '中国' : '自然'}
+              {category === 'global' ? '全球' : category === 'china' ? '中国' : category === 'europe' ? '欧洲' : '自然'}
             </button>
           ))}
         </div>

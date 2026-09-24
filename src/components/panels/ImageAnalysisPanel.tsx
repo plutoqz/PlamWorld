@@ -48,14 +48,35 @@ export function ImageAnalysisPanel({ tool }: Props) {
     ensureKeyframes();
   }, []);
 
+  const [showMask, setShowMask] = useState(true);
+  const [maskOpacity, setMaskOpacity] = useState(0.65);
+  const [maskFilter, setMaskFilter] = useState<'all' | 'vegetation' | 'water' | 'building'>('all');
+
+  const handleToggleMask = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.checked;
+    setShowMask(val);
+    tool.setMaskVisibility(val);
+  };
+
+  const handleOpacityChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = parseFloat(e.target.value);
+    setMaskOpacity(val);
+    tool.setMaskOpacity(val);
+  };
+
+  const handleFilterChange = (filter: 'all' | 'vegetation' | 'water' | 'building') => {
+    setMaskFilter(filter);
+    tool.setMaskFilter(filter);
+  };
+
   // ---- 渲染 ----
 
-  const bars: { label: string; color: string; value: number; pct: string }[] = result
+  const bars: { label: string; color: string; value: number; pct: string; desc: string }[] = result
     ? [
-        { label: '🌿 植被', color: '#4caf50', value: result.vegetation, pct: ((result.vegetation / result.totalPixels) * 100).toFixed(1) },
-        { label: '💧 水体', color: '#2196f3', value: result.water,      pct: ((result.water      / result.totalPixels) * 100).toFixed(1) },
-        { label: '🏗️ 建筑', color: '#9e9e9e', value: result.building,   pct: ((result.building   / result.totalPixels) * 100).toFixed(1) },
-        { label: '📦 其他', color: '#e0e0e0', value: result.other,      pct: ((result.other      / result.totalPixels) * 100).toFixed(1) },
+        { label: '🌿 植被 (VARI)', color: '#2ecc71', value: result.vegetation, pct: ((result.vegetation / result.totalPixels) * 100).toFixed(1), desc: '可见光大气阻抗植被指数' },
+        { label: '💧 水体 (NDWI)', color: '#0ea5e9', value: result.water,      pct: ((result.water      / result.totalPixels) * 100).toFixed(1), desc: '可见光水体吸收反射比' },
+        { label: '🏗️ 建筑与硬化', color: '#f97316', value: result.building,   pct: ((result.building   / result.totalPixels) * 100).toFixed(1), desc: '人工地表低饱和度特征' },
+        { label: '📦 其他裸地/阴影', color: '#94a3b8', value: result.other,      pct: ((result.other      / result.totalPixels) * 100).toFixed(1), desc: '沙地、裸岩与阴影' },
       ]
     : [];
 
@@ -63,7 +84,7 @@ export function ImageAnalysisPanel({ tool }: Props) {
     <div style={outerStyle}>
       {/* 标题 */}
       <div style={titleStyle}>
-        <span>🛰️ 卫星图色彩分析</span>
+        <span>🛰️ 遥感卫星图分析 (VARI / NDWI)</span>
       </div>
 
       {/* 分析按钮 */}
@@ -76,7 +97,7 @@ export function ImageAnalysisPanel({ tool }: Props) {
           cursor: loading ? 'not-allowed' : 'pointer',
         }}
       >
-        {loading ? '⏳ 分析中…' : '📸 分析当前视口'}
+        {loading ? '⏳ 遥感计算中…' : '📸 捕获视口并生成遥感覆层'}
       </button>
 
       {/* 加载 / 错误 / 结果 */}
@@ -93,10 +114,71 @@ export function ImageAnalysisPanel({ tool }: Props) {
 
       {result && !loading && (
         <div style={resultWrap}>
+          {/* 地图覆层控制器 */}
+          <div style={{
+            background: 'rgba(255,255,255,0.04)',
+            borderRadius: 8,
+            padding: '8px 10px',
+            marginBottom: 8,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 6,
+            fontSize: 11,
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', color: '#fff' }}>
+                <input
+                  type="checkbox"
+                  checked={showMask}
+                  onChange={handleToggleMask}
+                  style={{ cursor: 'pointer' }}
+                />
+                <span>🗺️ 地图叠加遥感分类层</span>
+              </label>
+              <span style={{ color: 'rgba(255,255,255,0.45)' }}>不透明度: {Math.round(maskOpacity * 100)}%</span>
+            </div>
+
+            {showMask && (
+              <>
+                <input
+                  type="range"
+                  min="0.1"
+                  max="1.0"
+                  step="0.05"
+                  value={maskOpacity}
+                  onChange={handleOpacityChange}
+                  style={{ width: '100%', cursor: 'pointer' }}
+                />
+
+                <div style={{ display: 'flex', gap: 4, marginTop: 2 }}>
+                  {(['all', 'vegetation', 'water', 'building'] as const).map((cat) => (
+                    <button
+                      key={cat}
+                      type="button"
+                      onClick={() => handleFilterChange(cat)}
+                      style={{
+                        flex: 1,
+                        padding: '3px 0',
+                        fontSize: 10,
+                        background: maskFilter === cat ? 'var(--pw-accent, #3b82f6)' : 'rgba(255,255,255,0.08)',
+                        color: maskFilter === cat ? '#fff' : 'rgba(255,255,255,0.7)',
+                        border: 'none',
+                        borderRadius: 4,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {cat === 'all' ? '全部' : cat === 'vegetation' ? '植被' : cat === 'water' ? '水体' : '建筑'}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+
           {/* 色条 */}
           {bars.map((bar) => (
             <div key={bar.label} style={barRowStyle}>
-              <span style={barLabelStyle}>{bar.label}</span>
+              <span style={barLabelStyle} title={bar.desc}>{bar.label}</span>
               <div style={barTrackStyle}>
                 <div
                   style={{
@@ -112,7 +194,7 @@ export function ImageAnalysisPanel({ tool }: Props) {
 
           {/* 总计 */}
           <div style={totalStyle}>
-            📐 总像素：{(result.totalPixels ?? 0).toLocaleString()}
+            📐 视口采样：{(result.totalPixels ?? 0).toLocaleString()} 像素 · 已生成空间掩膜
           </div>
         </div>
       )}
