@@ -39,7 +39,9 @@ export class MapLibreAdapter implements IMapEngine {
       pitch: options.pitch ?? 0,
       bearing: options.bearing ?? 0,
       maxPitch: 85,
-      preserveDrawingBuffer: true,
+      canvasContextAttributes: {
+        preserveDrawingBuffer: true,
+      },
     };
 
     // MapLibre v6 does not fire `load` when style is omitted.
