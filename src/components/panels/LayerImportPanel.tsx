@@ -308,12 +308,14 @@ function renderImportedLayer(
   const srcId = `${layer.id}-src`;
   const fillId = `${layer.id}-fill`;
   const lineId = `${layer.id}-line`;
+  const circleId = `${layer.id}-circle`;
 
   // 已存在 → 更新数据 + 可见性
   if (map.getSource(srcId)) {
     (map.getSource(srcId) as maplibregl.GeoJSONSource).setData(layer.data);
-    map.setLayoutProperty(fillId, 'visibility', layer.visible ? 'visible' : 'none');
-    map.setLayoutProperty(lineId, 'visibility', layer.visible ? 'visible' : 'none');
+    if (map.getLayer(fillId)) map.setLayoutProperty(fillId, 'visibility', layer.visible ? 'visible' : 'none');
+    if (map.getLayer(lineId)) map.setLayoutProperty(lineId, 'visibility', layer.visible ? 'visible' : 'none');
+    if (map.getLayer(circleId)) map.setLayoutProperty(circleId, 'visibility', layer.visible ? 'visible' : 'none');
     return;
   }
 
@@ -321,7 +323,13 @@ function renderImportedLayer(
   sources.set(layer.id, srcId);
 
   const hasPolygon = layer.data.features.some(
-    (f) => f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon',
+    (f) => f.geometry && (f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon'),
+  );
+  const hasLine = layer.data.features.some(
+    (f) => f.geometry && (f.geometry.type === 'LineString' || f.geometry.type === 'MultiLineString'),
+  );
+  const hasPoint = layer.data.features.some(
+    (f) => f.geometry && (f.geometry.type === 'Point' || f.geometry.type === 'MultiPoint'),
   );
 
   if (hasPolygon) {
@@ -333,17 +341,38 @@ function renderImportedLayer(
       layout: { visibility: layer.visible ? 'visible' : 'none' },
     });
   }
-  map.addLayer({
-    id: lineId,
-    source: srcId,
-    type: 'line',
-    paint: { 'line-color': layer.color, 'line-width': 2, 'line-opacity': 0.9 },
-    layout: {
-      'line-cap': 'round',
-      'line-join': 'round',
-      visibility: layer.visible ? 'visible' : 'none',
-    },
-  });
+
+  if (hasLine || hasPolygon) {
+    map.addLayer({
+      id: lineId,
+      source: srcId,
+      type: 'line',
+      paint: { 'line-color': layer.color, 'line-width': 2, 'line-opacity': 0.9 },
+      layout: {
+        'line-cap': 'round',
+        'line-join': 'round',
+        visibility: layer.visible ? 'visible' : 'none',
+      },
+    });
+  }
+
+  if (hasPoint) {
+    map.addLayer({
+      id: circleId,
+      source: srcId,
+      type: 'circle',
+      paint: {
+        'circle-color': layer.color,
+        'circle-radius': 5.5,
+        'circle-stroke-width': 1.5,
+        'circle-stroke-color': '#ffffff',
+        'circle-opacity': 0.9,
+      },
+      layout: {
+        visibility: layer.visible ? 'visible' : 'none',
+      },
+    });
+  }
 }
 
 function removeLayerSource(map: maplibregl.Map, id: string): void {
@@ -354,6 +383,11 @@ function removeLayerSource(map: maplibregl.Map, id: string): void {
   }
   try {
     if (map.getLayer(`${id}-line`)) map.removeLayer(`${id}-line`);
+  } catch {
+    /* */
+  }
+  try {
+    if (map.getLayer(`${id}-circle`)) map.removeLayer(`${id}-circle`);
   } catch {
     /* */
   }
@@ -370,17 +404,24 @@ function computeBounds(fc: FeatureCollection): { center: [number, number]; zoom:
     maxLng = -Infinity,
     minLat = Infinity,
     maxLat = -Infinity;
+
   const walk = (coords: any) => {
-    for (const item of coords) {
-      if (typeof item[0] === 'number') {
-        minLng = Math.min(minLng, item[0]);
-        maxLng = Math.max(maxLng, item[0]);
-        minLat = Math.min(minLat, item[1]);
-        maxLat = Math.max(maxLat, item[1]);
-      } else walk(item);
+    if (!coords) return;
+    if (typeof coords[0] === 'number' && typeof coords[1] === 'number') {
+      minLng = Math.min(minLng, coords[0]);
+      maxLng = Math.max(maxLng, coords[0]);
+      minLat = Math.min(minLat, coords[1]);
+      maxLat = Math.max(maxLat, coords[1]);
+      return;
+    }
+    if (Array.isArray(coords)) {
+      for (const item of coords) {
+        walk(item);
+      }
     }
   };
-  walk(fc.features.map((f: any) => f.geometry.coordinates));
+
+  walk(fc.features.map((f: any) => f.geometry?.coordinates));
   if (!isFinite(minLng)) return null;
   return { center: [(minLng + maxLng) / 2, (minLat + maxLat) / 2], zoom: 10 };
 }
