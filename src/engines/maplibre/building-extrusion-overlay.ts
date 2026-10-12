@@ -68,6 +68,10 @@ export class BuildingExtrusionOverlay {
   private opacity = 0.85;
   private theme: BuildingTheme = 'modern';
 
+  private onStyleLoad = () => {
+    this.initLayer();
+  };
+
   constructor(map: maplibregl.Map, options?: BuildingOverlayOptions) {
     this.map = map;
     if (options?.heightScale !== undefined) this.heightScale = options.heightScale;
@@ -75,6 +79,7 @@ export class BuildingExtrusionOverlay {
     if (options?.theme !== undefined) this.theme = options.theme;
 
     this.initLayer();
+    this.map.on('style.load', this.onStyleLoad);
   }
 
   private initLayer(): void {
@@ -169,6 +174,7 @@ export class BuildingExtrusionOverlay {
   }
 
   remove(): void {
+    this.map.off('style.load', this.onStyleLoad);
     try {
       if (this.map.getLayer(this.LAYER_ID)) {
         this.map.removeLayer(this.LAYER_ID);
