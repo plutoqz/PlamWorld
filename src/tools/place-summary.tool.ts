@@ -20,10 +20,10 @@ export interface PlaceSummaryResult {
 
 export class PlaceSummaryTool implements MapTool {
   readonly id = 'place-summary';
-  readonly name = '智能地点摘要';
+  readonly name = '地点特征摘要';
   readonly icon = '📍';
   readonly category = 'navigation' as const;
-  readonly description = '点击地图任意位置，获取地点详情 + 周边 POI + 自然语言摘要';
+  readonly description = '点击地图任意位置，获取逆地理编码与周边 POI 聚合摘要';
   readonly exclusive = true;
 
   private active = false;

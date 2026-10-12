@@ -135,10 +135,10 @@ export type NLProgressCallback = (message: string, percent: number) => void;
 
 export class NLSearchTool implements MapTool {
   readonly id = 'nl-search';
-  readonly name = '自然语言搜索';
+  readonly name = '地标与周边搜索';
   readonly icon = '💬';
   readonly category = 'navigation';
-  readonly description = '用自然语言搜索地点，如"故宫附近有哪些公园"、"台北最高的山"';
+  readonly description = '基于关键词规则搜索地标与周边分类（如"故宫附近的公园"、"台北最高的山"）';
   readonly exclusive = true;
 
   private active = false;

@@ -25,7 +25,7 @@ const MASK_LAYER_ID = 'palm-image-analysis-lyr';
 
 export class ImageAnalysisTool implements MapTool {
   readonly id = 'image-analysis';
-  readonly name = '卫星图分析';
+  readonly name = '遥感指数分析';
   readonly icon = '🛰️';
   readonly category = 'visualization' as const;
   readonly exclusive = true;
