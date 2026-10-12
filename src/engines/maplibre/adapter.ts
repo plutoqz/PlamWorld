@@ -39,6 +39,7 @@ export class MapLibreAdapter implements IMapEngine {
       pitch: options.pitch ?? 0,
       bearing: options.bearing ?? 0,
       maxPitch: 85,
+      preserveDrawingBuffer: true,
     };
 
     // MapLibre v6 does not fire `load` when style is omitted.
@@ -304,12 +305,21 @@ export class MapLibreAdapter implements IMapEngine {
 
   async captureViewport(_options?: CaptureOptions): Promise<Blob> {
     return new Promise((resolve, reject) => {
-      const canvas = this.map?.getCanvas();
+      const map = this.map;
+      if (!map) return reject(new Error('Map not available'));
+      const canvas = map.getCanvas();
       if (!canvas) return reject(new Error('Map canvas not available'));
-      canvas.toBlob((blob: Blob | null) => {
-        if (blob) resolve(blob);
-        else reject(new Error('toBlob failed'));
-      }, 'image/png');
+
+      const grab = () => {
+        canvas.toBlob((blob: Blob | null) => {
+          if (blob) resolve(blob);
+          else reject(new Error('toBlob failed'));
+        }, 'image/png');
+      };
+
+      // 强制触发一次重绘并在 render 后截取，确保画面内容最新且非空白
+      map.triggerRepaint();
+      map.once('render', grab);
     });
   }
 
