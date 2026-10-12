@@ -8,7 +8,7 @@ import { pmtilesSource } from './pmtiles';
 import { esriSatellite } from './esri-satellite';
 import { osmLiberty } from './osm-liberty';
 
-const BUILTIN_SOURCES: ITileSource[] = [googleSatellite, osmRaster, openTopo, pmtilesSource, esriSatellite, osmLiberty];
+const BUILTIN_SOURCES: ITileSource[] = [esriSatellite, osmRaster, openTopo, googleSatellite, pmtilesSource, osmLiberty];
 
 class SourceRegistry {
   private sources = new Map<string, ITileSource>();
@@ -16,7 +16,7 @@ class SourceRegistry {
 
   constructor() {
     BUILTIN_SOURCES.forEach((s) => this.register(s));
-    this.activeId = googleSatellite.id;
+    this.activeId = esriSatellite.id;
   }
 
   register(source: ITileSource): void {
@@ -29,7 +29,7 @@ class SourceRegistry {
   }
 
   getActive(): ITileSource {
-    return this.sources.get(this.activeId) ?? googleSatellite;
+    return this.sources.get(this.activeId) ?? esriSatellite;
   }
 
   setActive(sourceId: string): ITileSource | undefined {
